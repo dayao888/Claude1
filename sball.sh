@@ -380,16 +380,7 @@ download_sing_box() {
     log "INFO" "下载地址: $download_url"
     log "INFO" "保存路径: $download_file"
     
-    # 预先检查网络连接
-    log "INFO" "检查网络连接..."
-    if ! timeout 10 ping -c 1 8.8.8.8 >/dev/null 2>&1; then
-        log "WARN" "网络连接可能存在问题"
-    fi
-    
-    # 检查DNS解析
-    if ! timeout 10 nslookup github.com >/dev/null 2>&1; then
-        log "WARN" "DNS解析可能存在问题"
-    fi
+    # 开始下载流程
     
     # 下载文件，使用更详细的选项
     local download_success=false
@@ -402,13 +393,13 @@ download_sing_box() {
         
         # 添加超时控制，防止无限等待
         log "INFO" "开始wget下载..."
-        if timeout 120 wget -q -O "$download_file" "$download_url" \
+        if ( timeout 120 wget -q -O "$download_file" "$download_url" \
             --timeout=30 \
             --tries=1 \
             --dns-timeout=10 \
             --connect-timeout=15 \
             --read-timeout=60 \
-            --no-verbose 2>/dev/null; then
+            --no-verbose 2>/dev/null ); then
             download_success=true
             log "INFO" "wget下载成功"
             break
@@ -441,11 +432,11 @@ download_sing_box() {
             
             if command -v curl >/dev/null 2>&1; then
                 log "INFO" "开始curl下载..."
-                if timeout 120 curl -sSL -o "$download_file" "$download_url" \
+                if ( timeout 120 curl -sSL -o "$download_file" "$download_url" \
                     --connect-timeout 15 \
                     --max-time 90 \
                     --retry 0 \
-                    --fail 2>/dev/null; then
+                    --fail 2>/dev/null ); then
                     download_success=true
                     log "INFO" "curl下载成功"
                     break
