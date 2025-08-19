@@ -8,6 +8,12 @@
 
 set -e  # 遇到错误立即退出
 
+# 调试模式检查
+if [[ "${DEBUG:-false}" == "true" ]]; then
+    set -x  # 启用命令跟踪
+    echo "[DEBUG] 调试模式已启用"
+fi
+
 # 自动修复脚本文件格式（如果可能的话）
 if command -v dos2unix >/dev/null 2>&1 && [[ -f "${BASH_SOURCE[0]}" ]]; then
     dos2unix "${BASH_SOURCE[0]}" 2>/dev/null || true
@@ -15,6 +21,14 @@ fi
 
 # 全局变量定义
 readonly SCRIPT_VERSION="2.0.0"
+
+# 显示脚本基本信息
+if [[ "${DEBUG:-false}" == "true" ]]; then
+    echo "[DEBUG] 脚本版本: $SCRIPT_VERSION"
+    echo "[DEBUG] 脚本路径: ${BASH_SOURCE[0]}"
+    echo "[DEBUG] 执行用户: $(whoami)"
+    echo "[DEBUG] 系统信息: $(uname -a)"
+fi
 readonly SCRIPT_NAME="SBall"
 readonly GITHUB_REPO="dayao888/Claude1"
 readonly SING_BOX_VERSION_API="https://api.github.com/repos/SagerNet/sing-box/releases/latest"
@@ -76,8 +90,24 @@ log() {
 error_exit() {
     log "ERROR" "$1"
     
+    # 显示调试信息
+    if [[ "${DEBUG:-false}" == "true" ]]; then
+        log "DEBUG" "错误发生时的系统状态:"
+        log "DEBUG" "当前用户: $(whoami)"
+        log "DEBUG" "当前目录: $(pwd)"
+        log "DEBUG" "可用磁盘空间: $(df -h / | tail -1 | awk '{print $4}')"
+        log "DEBUG" "内存使用情况: $(free -h | grep Mem | awk '{print $3"/"$2}')"
+        if [[ -n "${DOWNLOAD_FILE:-}" && -f "${DOWNLOAD_FILE}" ]]; then
+            log "DEBUG" "下载文件状态: $(ls -lh "$DOWNLOAD_FILE")"
+        fi
+    fi
+    
     # 清理可能的临时文件
     cleanup_temp_files
+    
+    echo -e "\n${RED}脚本执行失败！${NC}"
+    echo -e "${YELLOW}如需调试信息，请设置环境变量 DEBUG=true 后重新运行脚本${NC}"
+    echo -e "${YELLOW}例如: DEBUG=true bash sball.sh${NC}"
     
     exit 1
 }
@@ -359,17 +389,17 @@ download_sing_box() {
         ((download_attempts++))
         log "INFO" "下载尝试 $download_attempts/$max_attempts"
         
-        # 将 wget 输出重定向，只在 stderr 显示，不影响函数返回值
-        if wget -O "$download_file" "$download_url" \
+        # 使用wget下载，完全静默模式避免输出污染
+        if wget -q -O "$download_file" "$download_url" \
             --timeout=30 \
             --tries=1 \
-            --progress=bar:force \
-            --show-progress >&2; then
+            --no-verbose; then
             download_success=true
+            log "INFO" "wget下载成功"
             break
         else
             local wget_exit_code=$?
-            log "WARN" "下载失败，错误代码: $wget_exit_code"
+            log "WARN" "wget下载失败，错误代码: $wget_exit_code"
             [[ -f "$download_file" ]] && rm -f "$download_file"
             
             if [[ $download_attempts -lt $max_attempts ]]; then
@@ -382,23 +412,39 @@ download_sing_box() {
     if [[ $download_success == false ]]; then
         log "WARN" "wget下载失败，尝试使用curl..."
         
-        # 尝试使用curl作为备用方案
-        if command -v curl >/dev/null 2>&1; then
-            if curl -L -o "$download_file" "$download_url" \
-                --connect-timeout 30 \
-                --max-time 300 \
-                --retry 3 \
-                --retry-delay 5 \
-                --progress-bar >&2; then
-                download_success=true
-                log "INFO" "使用curl下载成功"
+        # 重置尝试次数，使用curl作为备用方案
+        download_attempts=0
+        while [[ $download_attempts -lt $max_attempts && $download_success == false ]]; do
+            ((download_attempts++))
+            log "INFO" "curl下载尝试 $download_attempts/$max_attempts"
+            
+            if command -v curl >/dev/null 2>&1; then
+                if curl -s -L -o "$download_file" "$download_url" \
+                    --connect-timeout 30 \
+                    --max-time 300 \
+                    --retry 0 \
+                    --fail; then
+                    download_success=true
+                    log "INFO" "curl下载成功"
+                    break
+                else
+                    local curl_exit_code=$?
+                    log "WARN" "curl下载失败，错误代码: $curl_exit_code"
+                    [[ -f "$download_file" ]] && rm -f "$download_file"
+                    
+                    if [[ $download_attempts -lt $max_attempts ]]; then
+                        log "INFO" "等待5秒后重试..."
+                        sleep 5
+                    fi
+                fi
             else
-                log "ERROR" "curl下载也失败了"
+                log "ERROR" "curl命令不可用"
+                break
             fi
-        fi
+        done
         
         if [[ $download_success == false ]]; then
-            error_exit "下载失败，wget和curl都无法下载文件。请检查网络连接和下载地址"
+            error_exit "下载失败，wget和curl都无法下载文件。请检查网络连接和下载地址: $download_url"
         fi
     fi
     
@@ -414,10 +460,17 @@ download_sing_box() {
     # 验证文件类型
     local file_type
     file_type=$(file "$download_file" 2>/dev/null || echo "unknown")
-    if [[ ! "$file_type" =~ "gzip compressed" ]]; then
-        log "WARN" "文件类型异常: $file_type" >&2
-        log "INFO" "文件前几个字节:" >&2
-        hexdump -C "$download_file" | head -3 >&2
+    if [[ ! "$file_type" =~ "gzip compressed" ]] && [[ ! "$file_type" =~ "compressed data" ]]; then
+        log "WARN" "文件类型可能异常: $file_type"
+        # 检查文件头部是否为gzip格式
+        local file_header
+        file_header=$(hexdump -C "$download_file" | head -1 | awk '{print $2$3}')
+        if [[ "$file_header" != "1f8b" ]]; then
+            log "ERROR" "文件不是有效的gzip格式，文件头: $file_header"
+            log "INFO" "文件前几个字节:"
+            hexdump -C "$download_file" | head -3
+            error_exit "下载的文件格式错误"
+        fi
     fi
     
     # 显示文件大小
@@ -425,8 +478,11 @@ download_sing_box() {
     file_size=$(ls -lh "$download_file" | awk '{print $5}')
     success "下载完成: $download_file (大小: $file_size)"
     
-    # 设置全局变量，避免输出污染
+    # 设置全局变量
     DOWNLOAD_FILE="$download_file"
+    
+    # 返回成功状态
+    return 0
 }
 
 # 安装Sing-box
@@ -450,8 +506,12 @@ install_sing_box() {
     file_info=$(file "$download_file")
     log "INFO" "文件类型: $file_info"
     
-    if [[ ! "$file_info" =~ "gzip compressed" ]]; then
-        error_exit "文件不是有效的gzip压缩文件: $file_info"
+    if [[ ! "$file_info" =~ "gzip compressed" ]] && [[ ! "$file_info" =~ "compressed data" ]]; then
+        log "ERROR" "文件不是有效的gzip压缩文件: $file_info"
+        log "INFO" "文件大小: $(ls -lh "$download_file" | awk '{print $5}')"
+        log "INFO" "文件头部信息:"
+        hexdump -C "$download_file" | head -2
+        error_exit "文件格式验证失败"
     fi
     
     # 创建临时目录
@@ -471,11 +531,16 @@ install_sing_box() {
     
     # 解压文件
     log "INFO" "解压文件到: $temp_dir"
-    if ! tar -xzf "$download_file" -C "$temp_dir" 2>&1; then
+    if ! tar -xzf "$download_file" -C "$temp_dir" >/dev/null 2>&1; then
         local tar_error=$?
         log "ERROR" "tar解压失败，错误代码: $tar_error"
         log "INFO" "尝试列出压缩文件内容:"
-        tar -tzf "$download_file" | head -10
+        if tar -tzf "$download_file" >/dev/null 2>&1; then
+            log "INFO" "压缩文件内容列表:"
+            tar -tzf "$download_file" | head -10
+        else
+            log "ERROR" "无法列出压缩文件内容，文件可能已损坏"
+        fi
         rm -rf "$temp_dir"
         error_exit "解压失败，错误代码: $tar_error"
     fi
