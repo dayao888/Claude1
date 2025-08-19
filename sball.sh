@@ -380,6 +380,17 @@ download_sing_box() {
     log "INFO" "下载地址: $download_url"
     log "INFO" "保存路径: $download_file"
     
+    # 预先检查网络连接
+    log "INFO" "检查网络连接..."
+    if ! timeout 10 ping -c 1 8.8.8.8 >/dev/null 2>&1; then
+        log "WARN" "网络连接可能存在问题"
+    fi
+    
+    # 检查DNS解析
+    if ! timeout 10 nslookup github.com >/dev/null 2>&1; then
+        log "WARN" "DNS解析可能存在问题"
+    fi
+    
     # 下载文件，使用更详细的选项
     local download_success=false
     local download_attempts=0
@@ -389,18 +400,28 @@ download_sing_box() {
         ((download_attempts++))
         log "INFO" "下载尝试 $download_attempts/$max_attempts"
         
-        # 使用wget下载，完全静默模式避免输出污染
-        if wget -q -O "$download_file" "$download_url" \
+        # 添加超时控制，防止无限等待
+        log "INFO" "开始wget下载..."
+        if timeout 120 wget -q -O "$download_file" "$download_url" \
             --timeout=30 \
             --tries=1 \
-            --no-verbose; then
+            --dns-timeout=10 \
+            --connect-timeout=15 \
+            --read-timeout=60 \
+            --no-verbose 2>/dev/null; then
             download_success=true
             log "INFO" "wget下载成功"
             break
         else
             local wget_exit_code=$?
             log "WARN" "wget下载失败，错误代码: $wget_exit_code"
-            [[ -f "$download_file" ]] && rm -f "$download_file"
+            
+            # 清理可能的残留文件
+            if [[ -f "$download_file" ]]; then
+                local file_size=$(stat -c%s "$download_file" 2>/dev/null || echo "0")
+                log "INFO" "清理残留文件 (大小: ${file_size}字节)"
+                rm -f "$download_file"
+            fi
             
             if [[ $download_attempts -lt $max_attempts ]]; then
                 log "INFO" "等待5秒后重试..."
@@ -419,18 +440,25 @@ download_sing_box() {
             log "INFO" "curl下载尝试 $download_attempts/$max_attempts"
             
             if command -v curl >/dev/null 2>&1; then
-                if curl -s -L -o "$download_file" "$download_url" \
-                    --connect-timeout 30 \
-                    --max-time 300 \
+                log "INFO" "开始curl下载..."
+                if timeout 120 curl -sSL -o "$download_file" "$download_url" \
+                    --connect-timeout 15 \
+                    --max-time 90 \
                     --retry 0 \
-                    --fail; then
+                    --fail 2>/dev/null; then
                     download_success=true
                     log "INFO" "curl下载成功"
                     break
                 else
                     local curl_exit_code=$?
                     log "WARN" "curl下载失败，错误代码: $curl_exit_code"
-                    [[ -f "$download_file" ]] && rm -f "$download_file"
+                    
+                    # 清理残留
+                    if [[ -f "$download_file" ]]; then
+                        local file_size=$(stat -c%s "$download_file" 2>/dev/null || echo "0")
+                        log "INFO" "清理残留文件 (大小: ${file_size}字节)"
+                        rm -f "$download_file"
+                    fi
                     
                     if [[ $download_attempts -lt $max_attempts ]]; then
                         log "INFO" "等待5秒后重试..."
