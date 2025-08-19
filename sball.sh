@@ -52,21 +52,51 @@ log() {
     local message="$*"
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     
+    # 控制台输出（带颜色）
     case $level in
-        "INFO")  echo -e "${GREEN}[INFO]${NC}  ${timestamp} - $message" ;;
-        "WARN")  echo -e "${YELLOW}[WARN]${NC}  ${timestamp} - $message" ;;
-        "ERROR") echo -e "${RED}[ERROR]${NC} ${timestamp} - $message" ;;
-        "DEBUG") echo -e "${BLUE}[DEBUG]${NC} ${timestamp} - $message" ;;
+        "INFO")  echo -e "${GREEN}[INFO]${NC}  ${timestamp} - $message" >&2 ;;
+        "WARN")  echo -e "${YELLOW}[WARN]${NC}  ${timestamp} - $message" >&2 ;;
+        "ERROR") echo -e "${RED}[ERROR]${NC} ${timestamp} - $message" >&2 ;;
+        "DEBUG") echo -e "${BLUE}[DEBUG]${NC} ${timestamp} - $message" >&2 ;;
     esac
     
-    # 写入日志文件
-    [[ -d "$LOG_DIR" ]] && echo "[$level] $timestamp - $message" >> "$LOG_DIR/sball.log"
+    # 写入日志文件（无颜色）
+    if [[ -d "$LOG_DIR" ]]; then
+        echo "[$level] $timestamp - $message" >> "$LOG_DIR/sball.log"
+    fi
 }
 
 # 错误处理函数
 error_exit() {
     log "ERROR" "$1"
+    
+    # 清理可能的临时文件
+    cleanup_temp_files
+    
     exit 1
+}
+
+# 清理临时文件
+cleanup_temp_files() {
+    local temp_patterns=(
+        "/tmp/sing-box-*"
+        "/tmp/vless_reality.json"
+        "/tmp/hysteria2.json"
+        "/tmp/shadowsocks.json"
+        "/tmp/trojan.json"
+        "/tmp/tuic.json"
+        "/tmp/shadowtls.json"
+        "/tmp/vmess_ws.json"
+        "/tmp/vless_ws.json"
+        "/tmp/h2_reality.json"
+        "/tmp/grpc_reality.json"
+        "/tmp/anytls.json"
+    )
+    
+    for pattern in "${temp_patterns[@]}"; do
+        # 使用find而不是通配符，更安全
+        find /tmp -name "$(basename "$pattern")" -type f -mtime +1 -delete 2>/dev/null || true
+    done
 }
 
 # 成功提示函数
@@ -224,13 +254,41 @@ check_system_requirements() {
     success "系统资源检查完成"
 }
 
+# 检查必需的命令
+check_required_commands() {
+    log "INFO" "检查必需的系统命令..."
+    
+    local required_commands=("curl" "wget" "tar" "gzip" "find" "grep" "awk" "sed")
+    local missing_commands=()
+    
+    for cmd in "${required_commands[@]}"; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            missing_commands+=("$cmd")
+        fi
+    done
+    
+    if [[ ${#missing_commands[@]} -gt 0 ]]; then
+        log "WARN" "缺少以下必需命令: ${missing_commands[*]}"
+        log "INFO" "尝试安装缺少的依赖包..."
+        return 1
+    else
+        success "所有必需命令都已可用"
+        return 0
+    fi
+}
+
 # 安装系统依赖
 install_dependencies() {
     log "INFO" "安装系统依赖包..."
     
-    local deps_common="curl wget tar gzip openssl python3"
+    # 首先检查必需命令
+    if ! check_required_commands; then
+        log "INFO" "需要安装基本依赖包"
+    fi
+    
+    local deps_common="curl wget tar gzip openssl python3 file"
     local deps_debian="uuid-runtime qrencode jq"
-    local deps_centos="util-linux qrencode jq"
+    local deps_centos="util-linux qrencode jq file"
     
     case "$PACKAGE_MANAGER" in
         apt)
@@ -280,17 +338,86 @@ download_sing_box() {
     local download_url="https://github.com/SagerNet/sing-box/releases/download/v${SING_BOX_VERSION}/sing-box-${SING_BOX_VERSION}-linux-${ARCH}.tar.gz"
     local download_file="/tmp/sing-box-${SING_BOX_VERSION}-linux-${ARCH}.tar.gz"
     
-    # 下载文件
-    if ! wget -O "$download_file" "$download_url" --timeout=30; then
-        error_exit "下载失败，请检查网络连接"
+    # 清理可能存在的旧文件
+    [[ -f "$download_file" ]] && rm -f "$download_file"
+    
+    log "INFO" "下载地址: $download_url"
+    log "INFO" "保存路径: $download_file"
+    
+    # 下载文件，使用更详细的选项
+    local download_success=false
+    local download_attempts=0
+    local max_attempts=3
+    
+    while [[ $download_attempts -lt $max_attempts && $download_success == false ]]; do
+        ((download_attempts++))
+        log "INFO" "下载尝试 $download_attempts/$max_attempts"
+        
+        if wget -O "$download_file" "$download_url" \
+            --timeout=30 \
+            --tries=1 \
+            --progress=bar:force \
+            --show-progress 2>&1; then
+            download_success=true
+            break
+        else
+            local wget_exit_code=$?
+            log "WARN" "下载失败，错误代码: $wget_exit_code"
+            [[ -f "$download_file" ]] && rm -f "$download_file"
+            
+            if [[ $download_attempts -lt $max_attempts ]]; then
+                log "INFO" "等待5秒后重试..."
+                sleep 5
+            fi
+        fi
+    done
+    
+    if [[ $download_success == false ]]; then
+        log "WARN" "wget下载失败，尝试使用curl..."
+        
+        # 尝试使用curl作为备用方案
+        if command -v curl >/dev/null 2>&1; then
+            if curl -L -o "$download_file" "$download_url" \
+                --connect-timeout 30 \
+                --max-time 300 \
+                --retry 3 \
+                --retry-delay 5 \
+                --progress-bar; then
+                download_success=true
+                log "INFO" "使用curl下载成功"
+            else
+                log "ERROR" "curl下载也失败了"
+            fi
+        fi
+        
+        if [[ $download_success == false ]]; then
+            error_exit "下载失败，wget和curl都无法下载文件。请检查网络连接和下载地址"
+        fi
     fi
     
     # 验证下载的文件
-    if [[ ! -f "$download_file" ]] || [[ ! -s "$download_file" ]]; then
-        error_exit "下载的文件不存在或为空"
+    if [[ ! -f "$download_file" ]]; then
+        error_exit "下载的文件不存在: $download_file"
     fi
     
-    success "下载完成: $download_file"
+    if [[ ! -s "$download_file" ]]; then
+        error_exit "下载的文件为空: $download_file"
+    fi
+    
+    # 验证文件类型
+    local file_type
+    file_type=$(file "$download_file" 2>/dev/null || echo "unknown")
+    if [[ ! "$file_type" =~ "gzip compressed" ]]; then
+        log "WARN" "文件类型异常: $file_type"
+        log "INFO" "文件前几个字节:"
+        hexdump -C "$download_file" | head -3
+    fi
+    
+    # 显示文件大小
+    local file_size
+    file_size=$(ls -lh "$download_file" | awk '{print $5}')
+    success "下载完成: $download_file (大小: $file_size)"
+    
     echo "$download_file"
 }
 
@@ -300,31 +427,109 @@ install_sing_box() {
     
     log "INFO" "安装Sing-box..."
     
+    # 验证输入文件
+    if [[ -z "$download_file" ]]; then
+        error_exit "未提供下载文件路径"
+    fi
+    
+    if [[ ! -f "$download_file" ]]; then
+        error_exit "下载文件不存在: $download_file"
+    fi
+    
+    # 再次验证文件完整性
+    log "INFO" "验证下载文件: $download_file"
+    local file_info
+    file_info=$(file "$download_file")
+    log "INFO" "文件类型: $file_info"
+    
+    if [[ ! "$file_info" =~ "gzip compressed" ]]; then
+        error_exit "文件不是有效的gzip压缩文件: $file_info"
+    fi
+    
     # 创建临时目录
-    local temp_dir="/tmp/sing-box-install"
-    mkdir -p "$temp_dir"
+    local temp_dir="/tmp/sing-box-install-$$"
+    log "INFO" "创建临时目录: $temp_dir"
+    
+    if ! mkdir -p "$temp_dir"; then
+        error_exit "无法创建临时目录: $temp_dir"
+    fi
+    
+    # 测试tar文件完整性
+    log "INFO" "测试压缩文件完整性..."
+    if ! tar -tzf "$download_file" >/dev/null 2>&1; then
+        rm -rf "$temp_dir"
+        error_exit "压缩文件损坏或格式错误"
+    fi
     
     # 解压文件
-    if ! tar -xzf "$download_file" -C "$temp_dir"; then
-        error_exit "解压失败"
+    log "INFO" "解压文件到: $temp_dir"
+    if ! tar -xzf "$download_file" -C "$temp_dir" 2>&1; then
+        local tar_error=$?
+        log "ERROR" "tar解压失败，错误代码: $tar_error"
+        log "INFO" "尝试列出压缩文件内容:"
+        tar -tzf "$download_file" | head -10
+        rm -rf "$temp_dir"
+        error_exit "解压失败，错误代码: $tar_error"
     fi
+    
+    # 列出解压的内容
+    log "INFO" "解压内容:"
+    ls -la "$temp_dir"
     
     # 查找二进制文件
+    log "INFO" "查找sing-box二进制文件..."
     local binary_file
-    binary_file=$(find "$temp_dir" -name "sing-box" -type f | head -1)
+    binary_file=$(find "$temp_dir" -name "sing-box" -type f -executable 2>/dev/null | head -1)
     
-    if [[ ! -f "$binary_file" ]]; then
-        error_exit "未找到sing-box二进制文件"
+    if [[ -z "$binary_file" ]]; then
+        # 尝试查找任何名为sing-box的文件
+        binary_file=$(find "$temp_dir" -name "sing-box" -type f 2>/dev/null | head -1)
+        if [[ -z "$binary_file" ]]; then
+            log "ERROR" "在解压目录中未找到sing-box文件"
+            log "INFO" "解压目录结构:"
+            find "$temp_dir" -type f
+            rm -rf "$temp_dir"
+            error_exit "未找到sing-box二进制文件"
+        fi
     fi
     
+    log "INFO" "找到二进制文件: $binary_file"
+    
+    # 验证二进制文件
+    if [[ ! -f "$binary_file" ]]; then
+        rm -rf "$temp_dir"
+        error_exit "二进制文件不存在: $binary_file"
+    fi
+    
+    # 检查文件类型
+    local binary_info
+    binary_info=$(file "$binary_file")
+    log "INFO" "二进制文件信息: $binary_info"
+    
     # 安装二进制文件
+    log "INFO" "安装二进制文件到 /usr/local/bin/sing-box"
     chmod +x "$binary_file"
-    mv "$binary_file" /usr/local/bin/sing-box
+    
+    if ! cp "$binary_file" /usr/local/bin/sing-box; then
+        rm -rf "$temp_dir"
+        error_exit "无法复制二进制文件到 /usr/local/bin/"
+    fi
+    
+    # 验证安装
+    if command -v sing-box >/dev/null 2>&1; then
+        local version_info
+        version_info=$(sing-box version 2>/dev/null | head -1)
+        log "INFO" "Sing-box版本: $version_info"
+    else
+        log "WARN" "sing-box命令不在PATH中，但文件已复制"
+    fi
     
     # 创建必要目录
+    log "INFO" "创建配置和日志目录"
     mkdir -p "$CONFIG_DIR" "$LOG_DIR"
     
     # 清理临时文件
+    log "INFO" "清理临时文件"
     rm -rf "$temp_dir" "$download_file"
     
     success "Sing-box安装完成"
