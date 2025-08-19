@@ -8,6 +8,11 @@
 
 set -e  # 遇到错误立即退出
 
+# 自动修复脚本文件格式（如果可能的话）
+if command -v dos2unix >/dev/null 2>&1 && [[ -f "${BASH_SOURCE[0]}" ]]; then
+    dos2unix "${BASH_SOURCE[0]}" 2>/dev/null || true
+fi
+
 # 全局变量定义
 readonly SCRIPT_VERSION="2.0.0"
 readonly SCRIPT_NAME="SBall"
@@ -40,6 +45,7 @@ EMAIL=""
 PROTOCOLS=()
 SING_BOX_VERSION=""
 UUID=""
+DOWNLOAD_FILE=""
 
 # =============================================================================
 # 工具函数
@@ -258,7 +264,7 @@ check_system_requirements() {
 check_required_commands() {
     log "INFO" "检查必需的系统命令..."
     
-    local required_commands=("curl" "wget" "tar" "gzip" "find" "grep" "awk" "sed")
+    local required_commands=("curl" "wget" "tar" "gzip" "find" "grep" "awk" "sed" "dos2unix")
     local missing_commands=()
     
     for cmd in "${required_commands[@]}"; do
@@ -286,9 +292,9 @@ install_dependencies() {
         log "INFO" "需要安装基本依赖包"
     fi
     
-    local deps_common="curl wget tar gzip openssl python3 file"
+    local deps_common="curl wget tar gzip openssl python3 file dos2unix"
     local deps_debian="uuid-runtime qrencode jq"
-    local deps_centos="util-linux qrencode jq file"
+    local deps_centos="util-linux qrencode jq"
     
     case "$PACKAGE_MANAGER" in
         apt)
@@ -353,11 +359,12 @@ download_sing_box() {
         ((download_attempts++))
         log "INFO" "下载尝试 $download_attempts/$max_attempts"
         
+        # 将 wget 输出重定向，只在 stderr 显示，不影响函数返回值
         if wget -O "$download_file" "$download_url" \
             --timeout=30 \
             --tries=1 \
             --progress=bar:force \
-            --show-progress 2>&1; then
+            --show-progress >&2; then
             download_success=true
             break
         else
@@ -382,7 +389,7 @@ download_sing_box() {
                 --max-time 300 \
                 --retry 3 \
                 --retry-delay 5 \
-                --progress-bar; then
+                --progress-bar >&2; then
                 download_success=true
                 log "INFO" "使用curl下载成功"
             else
@@ -408,9 +415,9 @@ download_sing_box() {
     local file_type
     file_type=$(file "$download_file" 2>/dev/null || echo "unknown")
     if [[ ! "$file_type" =~ "gzip compressed" ]]; then
-        log "WARN" "文件类型异常: $file_type"
-        log "INFO" "文件前几个字节:"
-        hexdump -C "$download_file" | head -3
+        log "WARN" "文件类型异常: $file_type" >&2
+        log "INFO" "文件前几个字节:" >&2
+        hexdump -C "$download_file" | head -3 >&2
     fi
     
     # 显示文件大小
@@ -418,7 +425,8 @@ download_sing_box() {
     file_size=$(ls -lh "$download_file" | awk '{print $5}')
     success "下载完成: $download_file (大小: $file_size)"
     
-    echo "$download_file"
+    # 设置全局变量，避免输出污染
+    DOWNLOAD_FILE="$download_file"
 }
 
 # 安装Sing-box
@@ -1115,9 +1123,8 @@ install_menu() {
     
     # 下载并安装Sing-box
     get_latest_version
-    local download_file
-    download_file=$(download_sing_box)
-    install_sing_box "$download_file"
+    download_sing_box
+    install_sing_box "$DOWNLOAD_FILE"
     
     # 创建服务
     create_systemd_service
