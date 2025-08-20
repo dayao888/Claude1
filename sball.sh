@@ -292,8 +292,8 @@ generate_reality_keys() {
 generate_protocol_config() {
     local protocol=$1
     local port=$2
-    local uuid=$(generate_uuid)
-    local password=$(generate_password)
+    local uuid=$3
+    local password=$4
     local short_id=$(openssl rand -hex 8)
     
     case $protocol in
@@ -776,6 +776,8 @@ generate_main_config() {
     for i in "${!SELECTED_PROTOCOLS[@]}"; do
         local protocol="${SELECTED_PROTOCOLS[i]}"
         local port="${PROTOCOL_PORTS[i]}"
+        local uuid=$(generate_uuid)
+        local password=$(generate_password)
         
         if [[ "$first" == "true" ]]; then
             first=false
@@ -783,11 +785,11 @@ generate_main_config() {
             inbounds="$inbounds,"
         fi
         
-        local config=$(generate_protocol_config "$protocol" "$port")
+        local config=$(generate_protocol_config "$protocol" "$port" "$uuid" "$password")
         inbounds="$inbounds$config"
         
         # 保存协议配置信息用于后续显示
-        PROTOCOL_CONFIGS[i]="$protocol:$port:$(generate_uuid):$(generate_password)"
+        PROTOCOL_CONFIGS[i]="$protocol:$port:$uuid:$password"
     done
     
     # 为ShadowTLS添加内部Shadowsocks入站
@@ -984,10 +986,10 @@ save_config_info() {
     for i in "${!SELECTED_PROTOCOLS[@]}"; do
         local protocol="${SELECTED_PROTOCOLS[i]}"
         local port="${PROTOCOL_PORTS[i]}"
-        local uuid_var="${protocol}_UUID"
-        local password_var="${protocol}_PASSWORD"
-        local uuid=${!uuid_var}
-        local password=${!password_var}
+        # 从PROTOCOL_CONFIGS数组中提取UUID和密码
+        local config="${PROTOCOL_CONFIGS[i]}"
+        local uuid=$(echo "$config" | cut -d':' -f3)
+        local password=$(echo "$config" | cut -d':' -f4)
         
         if [[ $i -gt 0 ]]; then
             json_content+=','
@@ -1563,4 +1565,3 @@ main() {
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     main "$@"
 fi
-
