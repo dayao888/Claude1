@@ -369,262 +369,68 @@ get_latest_version() {
 
 # 下载Sing-box
 download_sing_box() {
-    log "INFO" "下载Sing-box..."
-    
-    local download_url="https://github.com/SagerNet/sing-box/releases/download/v${SING_BOX_VERSION}/sing-box-${SING_BOX_VERSION}-linux-${ARCH}.tar.gz"
-    local download_file="/tmp/sing-box-${SING_BOX_VERSION}-linux-${ARCH}.tar.gz"
-    
-    # 清理可能存在的旧文件
+    log "INFO" "下载Sing-box (Ubuntu amd64 简化逻辑)..."
+
+    # 强制使用 amd64 套包，减少分支判断
+    local download_url="https://github.com/SagerNet/sing-box/releases/download/v${SING_BOX_VERSION}/sing-box-${SING_BOX_VERSION}-linux-amd64.tar.gz"
+    local download_file="/tmp/sing-box-${SING_BOX_VERSION}-linux-amd64.tar.gz"
+
+    # 清理旧文件
     [[ -f "$download_file" ]] && rm -f "$download_file"
-    
+
     log "INFO" "下载地址: $download_url"
     log "INFO" "保存路径: $download_file"
-    
-    # 开始下载流程
-    
-    # 下载文件，使用更详细的选项
-    local download_success=false
-    local download_attempts=0
-    local max_attempts=3
-    
-    while [[ $download_attempts -lt $max_attempts && $download_success == false ]]; do
-        ((download_attempts++))
-        log "INFO" "下载尝试 $download_attempts/$max_attempts"
-        
-        # 添加超时控制，防止无限等待
-        log "INFO" "开始wget下载..."
-        if ( timeout 120 wget -q -O "$download_file" "$download_url" \
-            --timeout=30 \
-            --tries=1 \
-            --dns-timeout=10 \
-            --connect-timeout=15 \
-            --read-timeout=60 \
-            --no-verbose 2>/dev/null ); then
-            download_success=true
-            log "INFO" "wget下载成功"
-            break
-        else
-            local wget_exit_code=$?
-            log "WARN" "wget下载失败，错误代码: $wget_exit_code"
-            
-            # 清理可能的残留文件
-            if [[ -f "$download_file" ]]; then
-                local file_size=$(stat -c%s "$download_file" 2>/dev/null || echo "0")
-                log "INFO" "清理残留文件 (大小: ${file_size}字节)"
-                rm -f "$download_file"
-            fi
-            
-            if [[ $download_attempts -lt $max_attempts ]]; then
-                log "INFO" "等待5秒后重试..."
-                sleep 5
-            fi
-        fi
-    done
-    
-    if [[ $download_success == false ]]; then
-        log "WARN" "wget下载失败，尝试使用curl..."
-        
-        # 重置尝试次数，使用curl作为备用方案
-        download_attempts=0
-        while [[ $download_attempts -lt $max_attempts && $download_success == false ]]; do
-            ((download_attempts++))
-            log "INFO" "curl下载尝试 $download_attempts/$max_attempts"
-            
-            if command -v curl >/dev/null 2>&1; then
-                log "INFO" "开始curl下载..."
-                if ( timeout 120 curl -sSL -o "$download_file" "$download_url" \
-                    --connect-timeout 15 \
-                    --max-time 90 \
-                    --retry 0 \
-                    --fail 2>/dev/null ); then
-                    download_success=true
-                    log "INFO" "curl下载成功"
-                    break
-                else
-                    local curl_exit_code=$?
-                    log "WARN" "curl下载失败，错误代码: $curl_exit_code"
-                    
-                    # 清理残留
-                    if [[ -f "$download_file" ]]; then
-                        local file_size=$(stat -c%s "$download_file" 2>/dev/null || echo "0")
-                        log "INFO" "清理残留文件 (大小: ${file_size}字节)"
-                        rm -f "$download_file"
-                    fi
-                    
-                    if [[ $download_attempts -lt $max_attempts ]]; then
-                        log "INFO" "等待5秒后重试..."
-                        sleep 5
-                    fi
-                fi
-            else
-                log "ERROR" "curl命令不可用"
-                break
-            fi
-        done
-        
-        if [[ $download_success == false ]]; then
-            error_exit "下载失败，wget和curl都无法下载文件。请检查网络连接和下载地址: $download_url"
+
+    # 简化下载流程：先 wget，失败再 curl；不做文件校验，不做复杂循环
+    if ! wget -O "$download_file" "$download_url"; then
+        log "WARN" "wget 失败，尝试使用 curl"
+        if ! curl -L --fail -o "$download_file" "$download_url"; then
+            error_exit "下载失败，请检查网络或GitHub连通性"
         fi
     fi
-    
-    # 验证下载的文件
-    if [[ ! -f "$download_file" ]]; then
-        error_exit "下载的文件不存在: $download_file"
-    fi
-    
-    if [[ ! -s "$download_file" ]]; then
-        error_exit "下载的文件为空: $download_file"
-    fi
-    
-    # 验证文件类型
-    local file_type
-    file_type=$(file "$download_file" 2>/dev/null || echo "unknown")
-    if [[ ! "$file_type" =~ "gzip compressed" ]] && [[ ! "$file_type" =~ "compressed data" ]]; then
-        log "WARN" "文件类型可能异常: $file_type"
-        # 检查文件头部是否为gzip格式
-        local file_header
-        file_header=$(hexdump -C "$download_file" | head -1 | awk '{print $2$3}')
-        if [[ "$file_header" != "1f8b" ]]; then
-            log "ERROR" "文件不是有效的gzip格式，文件头: $file_header"
-            log "INFO" "文件前几个字节:"
-            hexdump -C "$download_file" | head -3
-            error_exit "下载的文件格式错误"
-        fi
-    fi
-    
-    # 显示文件大小
-    local file_size
-    file_size=$(ls -lh "$download_file" | awk '{print $5}')
-    success "下载完成: $download_file (大小: $file_size)"
-    
-    # 设置全局变量
+
+    # 基础存在性检查（非校验）
+    [[ -f "$download_file" ]] || error_exit "下载文件未找到: $download_file"
+    [[ -s "$download_file" ]] || error_exit "下载文件为空: $download_file"
+
+    success "下载完成: $download_file"
     DOWNLOAD_FILE="$download_file"
-    
-    # 返回成功状态
     return 0
 }
 
 # 安装Sing-box
 install_sing_box() {
     local download_file="$1"
-    
-    log "INFO" "安装Sing-box..."
-    
-    # 验证输入文件
-    if [[ -z "$download_file" ]]; then
-        error_exit "未提供下载文件路径"
-    fi
-    
-    if [[ ! -f "$download_file" ]]; then
-        error_exit "下载文件不存在: $download_file"
-    fi
-    
-    # 再次验证文件完整性
-    log "INFO" "验证下载文件: $download_file"
-    local file_info
-    file_info=$(file "$download_file")
-    log "INFO" "文件类型: $file_info"
-    
-    if [[ ! "$file_info" =~ "gzip compressed" ]] && [[ ! "$file_info" =~ "compressed data" ]]; then
-        log "ERROR" "文件不是有效的gzip压缩文件: $file_info"
-        log "INFO" "文件大小: $(ls -lh "$download_file" | awk '{print $5}')"
-        log "INFO" "文件头部信息:"
-        hexdump -C "$download_file" | head -2
-        error_exit "文件格式验证失败"
-    fi
-    
-    # 创建临时目录
-    local temp_dir="/tmp/sing-box-install-$$"
-    log "INFO" "创建临时目录: $temp_dir"
-    
-    if ! mkdir -p "$temp_dir"; then
-        error_exit "无法创建临时目录: $temp_dir"
-    fi
-    
-    # 测试tar文件完整性
-    log "INFO" "测试压缩文件完整性..."
-    if ! tar -tzf "$download_file" >/dev/null 2>&1; then
-        rm -rf "$temp_dir"
-        error_exit "压缩文件损坏或格式错误"
-    fi
-    
-    # 解压文件
-    log "INFO" "解压文件到: $temp_dir"
-    if ! tar -xzf "$download_file" -C "$temp_dir" >/dev/null 2>&1; then
-        local tar_error=$?
-        log "ERROR" "tar解压失败，错误代码: $tar_error"
-        log "INFO" "尝试列出压缩文件内容:"
-        if tar -tzf "$download_file" >/dev/null 2>&1; then
-            log "INFO" "压缩文件内容列表:"
-            tar -tzf "$download_file" | head -10
-        else
-            log "ERROR" "无法列出压缩文件内容，文件可能已损坏"
-        fi
-        rm -rf "$temp_dir"
-        error_exit "解压失败，错误代码: $tar_error"
-    fi
-    
-    # 列出解压的内容
-    log "INFO" "解压内容:"
-    ls -la "$temp_dir"
-    
-    # 查找二进制文件
-    log "INFO" "查找sing-box二进制文件..."
+    log "INFO" "开始安装（精简解压逻辑，无文件校验）..."
+
+    [[ -n "$download_file" ]] || error_exit "未提供下载文件路径"
+    [[ -f "$download_file" ]] || error_exit "下载文件不存在: $download_file"
+
+    # 解压到临时目录
+    local temp_dir
+    temp_dir=$(mktemp -d -t sball.XXXXXX)
+    tar -xzf "$download_file" -C "$temp_dir"
+
+    # 寻找二进制文件
     local binary_file
-    binary_file=$(find "$temp_dir" -name "sing-box" -type f -executable 2>/dev/null | head -1)
-    
-    if [[ -z "$binary_file" ]]; then
-        # 尝试查找任何名为sing-box的文件
-        binary_file=$(find "$temp_dir" -name "sing-box" -type f 2>/dev/null | head -1)
-        if [[ -z "$binary_file" ]]; then
-            log "ERROR" "在解压目录中未找到sing-box文件"
-            log "INFO" "解压目录结构:"
-            find "$temp_dir" -type f
-            rm -rf "$temp_dir"
-            error_exit "未找到sing-box二进制文件"
-        fi
-    fi
-    
-    log "INFO" "找到二进制文件: $binary_file"
-    
-    # 验证二进制文件
-    if [[ ! -f "$binary_file" ]]; then
-        rm -rf "$temp_dir"
-        error_exit "二进制文件不存在: $binary_file"
-    fi
-    
-    # 检查文件类型
-    local binary_info
-    binary_info=$(file "$binary_file")
-    log "INFO" "二进制文件信息: $binary_info"
-    
-    # 安装二进制文件
-    log "INFO" "安装二进制文件到 /usr/local/bin/sing-box"
+    binary_file=$(find "$temp_dir" -type f -name "sing-box" | head -n 1)
+    [[ -n "$binary_file" ]] || error_exit "解压后未找到 sing-box 可执行文件"
+
     chmod +x "$binary_file"
-    
-    if ! cp "$binary_file" /usr/local/bin/sing-box; then
-        rm -rf "$temp_dir"
-        error_exit "无法复制二进制文件到 /usr/local/bin/"
-    fi
-    
-    # 验证安装
-    if command -v sing-box >/dev/null 2>&1; then
-        local version_info
-        version_info=$(sing-box version 2>/dev/null | head -1)
-        log "INFO" "Sing-box版本: $version_info"
-    else
-        log "WARN" "sing-box命令不在PATH中，但文件已复制"
-    fi
-    
-    # 创建必要目录
-    log "INFO" "创建配置和日志目录"
+    install -m 0755 "$binary_file" /usr/local/bin/sing-box
+
+    # 创建配置与日志目录
     mkdir -p "$CONFIG_DIR" "$LOG_DIR"
-    
-    # 清理临时文件
-    log "INFO" "清理临时文件"
+
+    # 清理
     rm -rf "$temp_dir" "$download_file"
-    
-    success "Sing-box安装完成"
+
+    # 打印版本信息（不作为校验）
+    if command -v sing-box >/dev/null 2>&1; then
+        sing-box version || true
+    fi
+
+    success "Sing-box 安装完成"
 }
 
 # 创建systemd服务
