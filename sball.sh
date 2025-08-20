@@ -1,164 +1,110 @@
 #!/bin/bash
 
-# SBall - Sing-box 全能安装脚本
-# Version: v2.0.0
-# Author: SBall Development Team
-# License: MIT
-# GitHub: https://github.com/dayao888/Claude1
+# SBall - Sing-box 全能科学上网程序
+# 版本: 1.0.0
+# 作者: Claude 4 Sonnet
+# 许可证: MIT License
+# 支持平台: Linux (Ubuntu--amd64)
 
-set -e  # 遇到错误立即退出
-
-# 调试模式检查
-if [[ "${DEBUG:-false}" == "true" ]]; then
-    set -x  # 启用命令跟踪
-    echo "[DEBUG] 调试模式已启用"
-fi
-
-# 自动修复脚本文件格式（如果可能的话）
-if command -v dos2unix >/dev/null 2>&1 && [[ -f "${BASH_SOURCE[0]}" ]]; then
-    dos2unix "${BASH_SOURCE[0]}" 2>/dev/null || true
-fi
-
+#===========================================
 # 全局变量定义
-readonly SCRIPT_VERSION="2.0.0"
+#===========================================
 
-# 显示脚本基本信息
-if [[ "${DEBUG:-false}" == "true" ]]; then
-    echo "[DEBUG] 脚本版本: $SCRIPT_VERSION"
-    echo "[DEBUG] 脚本路径: ${BASH_SOURCE[0]}"
-    echo "[DEBUG] 执行用户: $(whoami)"
-    echo "[DEBUG] 系统信息: $(uname -a)"
-fi
-readonly SCRIPT_NAME="SBall"
-readonly GITHUB_REPO="dayao888/Claude1"
-readonly SING_BOX_VERSION_API="https://api.github.com/repos/SagerNet/sing-box/releases/latest"
-readonly CONFIG_DIR="/etc/sing-box"
-readonly LOG_DIR="/var/log/sing-box"
-readonly SERVICE_NAME="sing-box"
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# 版本信息
+VERSION="1.0.0"
+SCRIPT_NAME="SBall"
+SCRIPT_URL="https://raw.githubusercontent.com/example/sball/main/sball.sh"
 
 # 颜色定义
-readonly RED='\033[0;31m'
-readonly GREEN='\033[0;32m'
-readonly YELLOW='\033[1;33m'
-readonly BLUE='\033[0;34m'
-readonly PURPLE='\033[0;35m'
-readonly CYAN='\033[0;36m'
-readonly WHITE='\033[1;37m'
-readonly NC='\033[0m' # No Color
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+PURPLE='\033[0;35m'
+CYAN='\033[0;36m'
+WHITE='\033[1;37m'
+NC='\033[0m' # No Color
 
-# 系统信息变量
-OS=""
-ARCH=""
-PACKAGE_MANAGER=""
-SERVICE_MANAGER=""
+# 路径配置
+WORK_DIR="/etc/sing-box"
+CONFIG_FILE="/etc/sing-box/config.json"
+SERVICE_FILE="/etc/systemd/system/sing-box.service"
+LOG_FILE="/var/log/sing-box.log"
+CERT_DIR="/etc/sing-box/certs"
+TEMP_DIR="/tmp/sball"
 
-# 配置变量
+# 网络配置
+PORT_RANGE="10000-65535"
+DEFAULT_PORT="443"
+SERVER_IP=""
 DOMAIN=""
-EMAIL=""
-PROTOCOLS=()
-SING_BOX_VERSION=""
-UUID=""
-DOWNLOAD_FILE=""
 
-# =============================================================================
-# 工具函数
-# =============================================================================
+# 支持的协议列表
+PROTOCOL_LIST=("vless-reality" "hysteria2" "tuic" "shadowtls" "shadowsocks" "trojan")
 
-# 日志函数
-log() {
-    local level=$1
-    shift
-    local message="$*"
-    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    
-    # 控制台输出（带颜色）
-    case $level in
-        "INFO")  echo -e "${GREEN}[INFO]${NC}  ${timestamp} - $message" >&2 ;;
-        "WARN")  echo -e "${YELLOW}[WARN]${NC}  ${timestamp} - $message" >&2 ;;
-        "ERROR") echo -e "${RED}[ERROR]${NC} ${timestamp} - $message" >&2 ;;
-        "DEBUG") echo -e "${BLUE}[DEBUG]${NC} ${timestamp} - $message" >&2 ;;
-    esac
-    
-    # 写入日志文件（无颜色）
-    if [[ -d "$LOG_DIR" ]]; then
-        echo "[$level] $timestamp - $message" >> "$LOG_DIR/sball.log"
-    fi
+# 安装状态
+INSTALLED=false
+SELECTED_PROTOCOL=""
+SELECTED_PORT=""
+GENERATED_UUID=""
+USE_DOMAIN=false
+USE_FAIL2BAN=false
+USE_PORT_PROTECTION=false
+
+
+#===========================================
+# 工具函数模块
+#===========================================
+
+# 信息输出函数
+info() {
+    echo -e "${BLUE}[INFO]${NC} $1"
 }
 
-# 错误处理函数
-error_exit() {
-    log "ERROR" "$1"
-    
-    # 显示调试信息
-    if [[ "${DEBUG:-false}" == "true" ]]; then
-        log "DEBUG" "错误发生时的系统状态:"
-        log "DEBUG" "当前用户: $(whoami)"
-        log "DEBUG" "当前目录: $(pwd)"
-        log "DEBUG" "可用磁盘空间: $(df -h / | tail -1 | awk '{print $4}')"
-        log "DEBUG" "内存使用情况: $(free -h | grep Mem | awk '{print $3"/"$2}')"
-        if [[ -n "${DOWNLOAD_FILE:-}" && -f "${DOWNLOAD_FILE}" ]]; then
-            log "DEBUG" "下载文件状态: $(ls -lh "$DOWNLOAD_FILE")"
-        fi
-    fi
-    
-    # 清理可能的临时文件
-    cleanup_temp_files
-    
-    echo -e "\n${RED}脚本执行失败！${NC}"
-    echo -e "${YELLOW}如需调试信息，请设置环境变量 DEBUG=true 后重新运行脚本${NC}"
-    echo -e "${YELLOW}例如: DEBUG=true bash sball.sh${NC}"
-    
-    exit 1
+success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
 }
 
-# 清理临时文件
-cleanup_temp_files() {
-    local temp_patterns=(
-        "/tmp/sing-box-*"
-        "/tmp/vless_reality.json"
-        "/tmp/hysteria2.json"
-        "/tmp/shadowsocks.json"
-        "/tmp/trojan.json"
-        "/tmp/tuic.json"
-        "/tmp/shadowtls.json"
-        "/tmp/vmess_ws.json"
-        "/tmp/vless_ws.json"
-        "/tmp/h2_reality.json"
-        "/tmp/grpc_reality.json"
-        "/tmp/anytls.json"
-    )
-    
-    for pattern in "${temp_patterns[@]}"; do
-        # 使用find而不是通配符，更安全
-        find /tmp -name "$(basename "$pattern")" -type f -mtime +1 -delete 2>/dev/null || true
+warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
+}
+
+error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+hint() {
+    echo -e "${PURPLE}[HINT]${NC} $1"
+}
+
+# 用户输入函数
+reading() {
+    read -p "$(echo -e "${CYAN}[INPUT]${NC} $1: ")" "$2"
+}
+
+# 确认函数
+confirm() {
+    local prompt="$1"
+    local response
+    while true; do
+        reading "$prompt [y/n]" response
+        case "$response" in
+            [Yy]|[Yy][Ee][Ss]) return 0 ;;
+            [Nn]|[Nn][Oo]) return 1 ;;
+            *) warning "请输入 y 或 n" ;;
+        esac
     done
 }
 
-# 成功提示函数
-success() {
-    log "INFO" "$1"
+# 暂停函数
+pause() {
+    reading "$(text 'press_enter')" _
 }
 
-# 警告提示函数
-warning() {
-    log "WARN" "$1"
-}
-
-# 检查是否为root用户
-check_root() {
-    if [[ $EUID -ne 0 ]]; then
-        error_exit "此脚本需要root权限运行，请使用 sudo 或以root用户身份运行"
-    fi
-}
-
-# 检查网络连接
-check_network() {
-    log "INFO" "检查网络连接..."
-    if ! ping -c 1 -W 3 8.8.8.8 >/dev/null 2>&1; then
-        error_exit "网络连接失败，请检查网络设置"
-    fi
-    success "网络连接正常"
+# 生成随机字符串
+generate_random_string() {
+    local length="${1:-8}"
+    tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c "$length"
 }
 
 # 生成UUID
@@ -166,288 +112,287 @@ generate_uuid() {
     if command -v uuidgen >/dev/null 2>&1; then
         uuidgen
     else
+        # 备用UUID生成方法
         cat /proc/sys/kernel/random/uuid
     fi
 }
 
 # 生成随机端口
 generate_random_port() {
-    local min_port=${1:-10000}
-    local max_port=${2:-65535}
-    local port
-    local max_attempts=50
-    local attempts=0
-    
-    while [[ $attempts -lt $max_attempts ]]; do
-        port=$(shuf -i $min_port-$max_port -n 1)
-        
-        # 检查端口是否已被占用
-        if ! netstat -tuln | grep -q ":$port "; then
-            # 检查端口是否已在配置文件中使用
-            if [[ -f "$CONFIG_DIR/connections.txt" ]] && grep -q ":$port:" "$CONFIG_DIR/connections.txt"; then
-                ((attempts++))
-                continue
-            fi
-            echo "$port"
-            return 0
-        fi
-        ((attempts++))
-    done
-    
-    error_exit "无法生成可用端口，已尝试 $max_attempts 次"
+    local min_port=10000
+    local max_port=65535
+    echo $((RANDOM % (max_port - min_port + 1) + min_port))
 }
 
-# 生成随机路径
-generate_random_path() {
-    openssl rand -hex 8
-}
-
-# 生成随机密码
-generate_random_password() {
-    openssl rand -base64 16
-}
-
-# =============================================================================
-# 系统检测模块
-# =============================================================================
-
-# 检测操作系统
-detect_os() {
-    log "INFO" "检测操作系统..."
-    
-    if [[ -f /etc/os-release ]]; then
-        . /etc/os-release
-        OS=$ID
-        OS_VERSION=$VERSION_ID
-    elif [[ -f /etc/redhat-release ]]; then
-        OS="centos"
-    elif [[ -f /etc/debian_version ]]; then
-        OS="debian"
-    else
-        error_exit "不支持的操作系统"
-    fi
-    
-    case "$OS" in
-        ubuntu|debian)
-            PACKAGE_MANAGER="apt"
-            SERVICE_MANAGER="systemctl"
-            ;;
-        centos|rhel|fedora)
-            PACKAGE_MANAGER="yum"
-            SERVICE_MANAGER="systemctl"
-            # CentOS 8+ 使用 dnf
-            if [[ -n $OS_VERSION ]] && [[ $OS_VERSION -ge 8 ]] 2>/dev/null; then
-                PACKAGE_MANAGER="dnf"
-            fi
-            ;;
-        *)
-            error_exit "不支持的操作系统: $OS"
-            ;;
-    esac
-    
-    success "检测到操作系统: $OS"
-}
-
-# 检测系统架构
-detect_arch() {
-    log "INFO" "检测系统架构..."
-    
-    local arch=$(uname -m)
-    case $arch in
-        x86_64|amd64)
-            ARCH="amd64"
-            ;;
-        aarch64|arm64)
-            ARCH="arm64"
-            ;;
-        armv7l)
-            ARCH="armv7"
-            ;;
-        *)
-            error_exit "不支持的系统架构: $arch"
-            ;;
-    esac
-    
-    success "检测到系统架构: $ARCH"
-}
-
-# 检查系统资源
-check_system_requirements() {
-    log "INFO" "检查系统资源..."
-    
-    # 检查内存
-    local mem_total=$(free -m | awk 'NR==2{printf "%.0f", $2}')
-    if [[ $mem_total -lt 512 ]]; then
-        warning "系统内存不足512MB，可能影响性能"
-    fi
-    
-    # 检查磁盘空间
-    local disk_free=$(df / | awk 'NR==2{print $4}')
-    if [[ $disk_free -lt 102400 ]]; then  # 100MB in KB
-        warning "根目录可用空间不足100MB，可能影响安装"
-    fi
-    
-    success "系统资源检查完成"
-}
-
-# 检查必需的命令
-check_required_commands() {
-    log "INFO" "检查必需的系统命令..."
-    
-    local required_commands=("curl" "wget" "tar" "gzip" "find" "grep" "awk" "sed" "dos2unix")
-    local missing_commands=()
-    
-    for cmd in "${required_commands[@]}"; do
-        if ! command -v "$cmd" >/dev/null 2>&1; then
-            missing_commands+=("$cmd")
-        fi
-    done
-    
-    if [[ ${#missing_commands[@]} -gt 0 ]]; then
-        log "WARN" "缺少以下必需命令: ${missing_commands[*]}"
-        log "INFO" "尝试安装缺少的依赖包..."
+# 检查端口是否被占用
+check_port() {
+    local port="$1"
+    if ss -tuln | grep -q ":$port "; then
         return 1
     else
-        success "所有必需命令都已可用"
         return 0
+    fi
+}
+
+# 获取服务器IP
+get_server_ip() {
+    # 尝试多种方法获取公网IP
+    local ip
+    ip=$(curl -s --max-time 10 ipv4.icanhazip.com) || 
+    ip=$(curl -s --max-time 10 ifconfig.me) || 
+    ip=$(curl -s --max-time 10 ip.sb) || 
+    ip=$(wget -qO- --timeout=10 ipecho.net/plain)
+    
+    if [[ -n "$ip" && "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        echo "$ip"
+    else
+        # 获取本地IP作为备用
+        ip route get 8.8.8.8 | awk 'NR==1 {print $7}'
+    fi
+}
+
+#===========================================
+# 系统检测模块
+#===========================================
+
+# 检查是否为root用户
+check_root() {
+    if [[ $EUID -ne 0 ]]; then
+        error "此脚本需要root权限运行"
+        error "请使用: sudo $0"
+        exit 1
+    fi
+}
+
+# 检查系统环境
+check_system() {
+    info "正在检查系统环境..."
+    
+    # 检查操作系统
+    if [[ ! -f /etc/os-release ]]; then
+        error "不支持的操作系统"
+        exit 1
+    fi
+    
+    source /etc/os-release
+    
+    # 检查是否为Ubuntu
+    if [[ "$ID" != "ubuntu" ]]; then
+        warning "建议使用 Ubuntu 系统，当前系统: $PRETTY_NAME"
+        if ! confirm "是否继续安装?"; then
+            exit 1
+        fi
+    fi
+    
+    # 检查系统架构
+    ARCH=$(uname -m)
+    case $ARCH in
+        x86_64) ARCH="amd64" ;;
+        aarch64) ARCH="arm64" ;;
+        armv7l) ARCH="armv7" ;;
+        *) 
+            error "不支持的系统架构: $ARCH"
+            exit 1
+            ;;
+    esac
+    
+    # 检查系统版本
+    if [[ -n "$VERSION_ID" ]]; then
+        local version_major=$(echo "$VERSION_ID" | cut -d. -f1)
+        if [[ "$ID" == "ubuntu" && $version_major -lt 18 ]]; then
+            error "Ubuntu 版本过低，建议使用 Ubuntu 18.04 或更高版本"
+            exit 1
+        fi
+    fi
+    
+    success "系统检查通过: $PRETTY_NAME ($ARCH)"
+}
+
+# 检查网络连接
+check_network() {
+    info "检查网络连接..."
+    
+    if ! ping -c 1 -W 5 8.8.8.8 >/dev/null 2>&1; then
+        error "网络连接失败，请检查网络设置"
+        exit 1
+    fi
+    
+    success "网络连接正常"
+}
+
+# 检查是否已安装
+check_installed() {
+    if [[ -f "$CONFIG_FILE" && -f "/usr/local/bin/sing-box" ]]; then
+        INSTALLED=true
+        return 0
+    else
+        INSTALLED=false
+        return 1
+    fi
+}
+
+#===========================================
+# 依赖安装模块
+#===========================================
+
+# 更新系统包
+update_system() {
+    info "更新系统包列表..."
+    apt update -qq
+    
+    if [[ $? -ne 0 ]]; then
+        error "系统包更新失败"
+        exit 1
     fi
 }
 
 # 安装系统依赖
 install_dependencies() {
-    log "INFO" "安装系统依赖包..."
+    info "正在安装系统依赖..."
     
-    # 首先检查必需命令
-    if ! check_required_commands; then
-        log "INFO" "需要安装基本依赖包"
-    fi
+    local packages=("curl" "wget" "jq" "openssl" "uuid-runtime" "unzip" "tar" "systemd" "iptables" "ufw")
     
-    local deps_common="curl wget tar gzip openssl python3 file dos2unix"
-    local deps_debian="uuid-runtime qrencode jq"
-    local deps_centos="util-linux qrencode jq"
+    for package in "${packages[@]}"; do
+        if ! dpkg -l | grep -q "^ii  $package "; then
+            info "安装 $package..."
+            apt install -y "$package" >/dev/null 2>&1
+            
+            if [[ $? -ne 0 ]]; then
+                error "安装 $package 失败"
+                exit 1
+            fi
+        fi
+    done
     
-    case "$PACKAGE_MANAGER" in
-        apt)
-            apt update
-            apt install -y $deps_common $deps_debian
-            ;;
-        yum)
-            yum install -y $deps_common $deps_centos
-            ;;
-        dnf)
-            dnf install -y $deps_common $deps_centos
-            ;;
-        *)
-            error_exit "未知的包管理器: $PACKAGE_MANAGER"
-            ;;
-    esac
+    # 安装证书工具
+    install_certbot
     
     success "系统依赖安装完成"
 }
 
-# =============================================================================
-# Sing-box 管理模块
-# =============================================================================
+# 安装Certbot
+install_certbot() {
+    if ! command -v certbot >/dev/null 2>&1; then
+        info "安装 Certbot..."
+        
+        if command -v snap >/dev/null 2>&1; then
+            snap install core >/dev/null 2>&1
+            snap refresh core >/dev/null 2>&1
+            snap install --classic certbot >/dev/null 2>&1
+            ln -sf /snap/bin/certbot /usr/bin/certbot 2>/dev/null
+        else
+            apt install -y certbot >/dev/null 2>&1
+        fi
+        
+        if command -v certbot >/dev/null 2>&1; then
+            success "Certbot 安装成功"
+        else
+            warning "Certbot 安装失败，将使用自签名证书"
+        fi
+    fi
+}
 
-# 获取最新版本号
+#===========================================
+# Sing-box核心模块
+#===========================================
+
+# 获取最新版本
 get_latest_version() {
-    log "INFO" "获取Sing-box最新版本..."
+    local api_url="https://api.github.com/repos/SagerNet/sing-box/releases/latest"
+    local version
     
-    local api_response
-    if ! api_response=$(curl -s --connect-timeout 10 "$SING_BOX_VERSION_API"); then
-        error_exit "无法获取版本信息，请检查网络连接"
+    version=$(curl -s --max-time 30 "$api_url" | jq -r '.tag_name' 2>/dev/null | sed 's/v//')
+    
+    if [[ -z "$version" || "$version" == "null" ]]; then
+        # 备用版本
+        version="1.12.0"
+        warning "无法获取最新版本，使用默认版本: $version"
     fi
     
-    SING_BOX_VERSION=$(echo "$api_response" | grep -o '"tag_name": *"[^"]*"' | sed 's/"tag_name": *"v\?\([^"]*\)"/\1/')
-    
-    if [[ -z "$SING_BOX_VERSION" ]]; then
-        error_exit "解析版本信息失败"
-    fi
-    
-    success "最新版本: v$SING_BOX_VERSION"
+    echo "$version"
 }
 
 # 下载Sing-box
-download_sing_box() {
-    log "INFO" "下载Sing-box (Ubuntu amd64 简化逻辑)..."
-
-    # 强制使用 amd64 套包，减少分支判断
-    local download_url="https://github.com/SagerNet/sing-box/releases/download/v${SING_BOX_VERSION}/sing-box-${SING_BOX_VERSION}-linux-amd64.tar.gz"
-    local download_file="/tmp/sing-box-${SING_BOX_VERSION}-linux-amd64.tar.gz"
-
-    # 清理旧文件
-    [[ -f "$download_file" ]] && rm -f "$download_file"
-
-    log "INFO" "下载地址: $download_url"
-    log "INFO" "保存路径: $download_file"
-
-    # 简化下载流程：先 wget，失败再 curl；不做文件校验，不做复杂循环
-    if ! wget -O "$download_file" "$download_url"; then
-        log "WARN" "wget 失败，尝试使用 curl"
-        if ! curl -L --fail -o "$download_file" "$download_url"; then
-            error_exit "下载失败，请检查网络或GitHub连通性"
-        fi
+download_singbox() {
+    local version="$1"
+    local download_url="https://github.com/SagerNet/sing-box/releases/download/v${version}/sing-box-${version}-linux-${ARCH}.tar.gz"
+    local temp_file="$TEMP_DIR/sing-box.tar.gz"
+    
+    info "正在下载 Sing-box v$version..."
+    
+    # 创建临时目录
+    mkdir -p "$TEMP_DIR"
+    
+    # 下载文件
+    if ! wget -q --show-progress --timeout=60 -O "$temp_file" "$download_url"; then
+        error "下载 Sing-box 失败"
+        return 1
     fi
-
-    # 基础存在性检查（非校验）
-    [[ -f "$download_file" ]] || error_exit "下载文件未找到: $download_file"
-    [[ -s "$download_file" ]] || error_exit "下载文件为空: $download_file"
-
-    success "下载完成: $download_file"
-    DOWNLOAD_FILE="$download_file"
+    
+    # 解压文件
+    if ! tar -xzf "$temp_file" -C "$TEMP_DIR"; then
+        error "解压 Sing-box 失败"
+        return 1
+    fi
+    
+    # 安装二进制文件
+    local extracted_dir="$TEMP_DIR/sing-box-${version}-linux-${ARCH}"
+    if [[ -f "$extracted_dir/sing-box" ]]; then
+        cp "$extracted_dir/sing-box" "/usr/local/bin/"
+        chmod +x "/usr/local/bin/sing-box"
+        success "Sing-box 安装成功"
+    else
+        error "找不到 Sing-box 二进制文件"
+        return 1
+    fi
+    
+    # 清理临时文件
+    rm -rf "$TEMP_DIR"
+    
     return 0
 }
 
 # 安装Sing-box
-install_sing_box() {
-    local download_file="$1"
-    log "INFO" "开始安装（精简解压逻辑，无文件校验）..."
-
-    [[ -n "$download_file" ]] || error_exit "未提供下载文件路径"
-    [[ -f "$download_file" ]] || error_exit "下载文件不存在: $download_file"
-
-    # 解压到临时目录
-    local temp_dir
-    temp_dir=$(mktemp -d -t sball.XXXXXX)
-    tar -xzf "$download_file" -C "$temp_dir"
-
-    # 寻找二进制文件
-    local binary_file
-    binary_file=$(find "$temp_dir" -type f -name "sing-box" | head -n 1)
-    [[ -n "$binary_file" ]] || error_exit "解压后未找到 sing-box 可执行文件"
-
-    chmod +x "$binary_file"
-    install -m 0755 "$binary_file" /usr/local/bin/sing-box
-
-    # 创建配置与日志目录
-    mkdir -p "$CONFIG_DIR" "$LOG_DIR"
-
-    # 清理
-    rm -rf "$temp_dir" "$download_file"
-
-    # 打印版本信息（不作为校验）
-    if command -v sing-box >/dev/null 2>&1; then
-        sing-box version || true
+install_singbox() {
+    info "开始安装 Sing-box..."
+    
+    # 获取最新版本
+    local version
+    version=$(get_latest_version)
+    
+    # 下载并安装
+    if download_singbox "$version"; then
+        # 创建工作目录
+        mkdir -p "$WORK_DIR" "$CERT_DIR"
+        
+        # 创建systemd服务
+        create_systemd_service
+        
+        success "Sing-box 安装完成"
+        return 0
+    else
+        error "Sing-box 安装失败"
+        return 1
     fi
-
-    success "Sing-box 安装完成"
 }
 
 # 创建systemd服务
 create_systemd_service() {
-    log "INFO" "创建systemd服务..."
+    info "创建 systemd 服务..."
     
-    cat > /etc/systemd/system/sing-box.service << 'EOF'
+    cat > "$SERVICE_FILE" << EOF
 [Unit]
 Description=sing-box service
 Documentation=https://sing-box.sagernet.org
 After=network.target nss-lookup.target
+Wants=network.target
 
 [Service]
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
-ExecStart=/usr/local/bin/sing-box run -c /etc/sing-box/config.json
-ExecReload=/bin/kill -HUP $MAINPID
+User=root
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+ExecStart=/usr/local/bin/sing-box run -c $CONFIG_FILE
+ExecReload=/bin/kill -HUP \$MAINPID
 Restart=on-failure
 RestartSec=10s
 LimitNOFILE=infinity
@@ -456,28 +401,368 @@ LimitNOFILE=infinity
 WantedBy=multi-user.target
 EOF
     
+    # 重新加载systemd
     systemctl daemon-reload
-    systemctl enable sing-box
+    systemctl enable sing-box >/dev/null 2>&1
     
-    success "systemd服务创建完成"
+    success "systemd 服务创建完成"
 }
 
-# =============================================================================
-# 配置管理模块
-# =============================================================================
+#===========================================
+# 主程序入口
+#===========================================
 
-# 生成基础配置
-generate_base_config() {
-    log "INFO" "生成基础配置..."
+# 主函数
+main() {
+    # 检查root权限
+    check_root
     
-    UUID=$(generate_uuid)
+    # 检查是否已安装
+    check_installed
     
-    cat > "$CONFIG_DIR/config.json" << EOF
+    # 获取服务器IP
+    SERVER_IP=$(get_server_ip)
+    
+    # 显示主菜单
+    show_main_menu
+}
+
+# 显示主菜单
+show_main_menu() {
+    while true; do
+        clear
+        echo -e "${CYAN}======================================${NC}"
+        echo -e "${WHITE}    欢迎使用 SBall${NC}"
+        echo -e "${CYAN}    版本: ${GREEN}$VERSION${NC}"
+        echo -e "${CYAN}======================================${NC}"
+        echo
+        
+        if [[ "$INSTALLED" == "true" ]]; then
+            echo -e "${GREEN}1.${NC} 管理配置"
+            echo -e "${BLUE}2.${NC} 查看配置"
+            echo -e "${BLUE}3.${NC} 查看日志"
+            echo -e "${BLUE}4.${NC} 服务状态"
+            echo -e "${BLUE}5.${NC} 证书信息"
+            echo -e "${YELLOW}6.${NC} 更新程序"
+            echo -e "${RED}7.${NC} 卸载程序"
+        else
+            echo -e "${GREEN}1.${NC} 一键安装"
+        fi
+        
+        echo -e "${PURPLE}8.${NC} 语言设置"
+        echo -e "${RED}0.${NC} 退出程序"
+        echo
+        echo -e "${CYAN}======================================${NC}"
+        
+        local choice
+        reading "请选择操作" choice
+        
+        case "$choice" in
+            1)
+                if [[ "$INSTALLED" == "true" ]]; then
+                    management_menu
+                else
+                    quick_install
+                fi
+                ;;
+            2)
+                if [[ "$INSTALLED" == "true" ]]; then
+                    view_node_info
+                    pause
+                fi
+                ;;
+            3)
+                if [[ "$INSTALLED" == "true" ]]; then
+                    view_logs
+                    pause
+                fi
+                ;;
+            4)
+                if [[ "$INSTALLED" == "true" ]]; then
+                    check_service_status
+                    pause
+                fi
+                ;;
+            5)
+                if [[ "$INSTALLED" == "true" ]]; then
+                    check_certificate_info
+                    pause
+                fi
+                ;;
+            6)
+                if [[ "$INSTALLED" == "true" ]]; then
+                    update_singbox
+                    pause
+                fi
+                ;;
+            7)
+                if [[ "$INSTALLED" == "true" ]]; then
+                    uninstall_singbox
+                    pause
+                fi
+                ;;
+            8)
+                switch_language
+                ;;
+            0)
+                echo
+                success "感谢使用 SBall!"
+                exit 0
+                ;;
+            *)
+                warning "无效选项，请重新选择"
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+# 一键安装函数
+quick_install() {
+    echo
+    info "正在安装 SBall..."
+    echo
+    
+    # 系统检查
+    check_system
+    check_network
+    
+    # 更新系统
+    update_system
+    
+    # 安装依赖
+    install_dependencies
+    
+    # 安装Sing-box
+    if ! install_singbox; then
+        error "安装失败"
+        pause
+        return 1
+    fi
+    
+    # 交互式配置
+    interactive_config
+    
+    # 生成配置文件
+    if generate_config; then
+        # 启动服务
+        systemctl start sing-box
+        
+        if systemctl is-active --quiet sing-box; then
+            success "安装成功"
+            INSTALLED=true
+            
+            # 显示配置信息
+            echo
+            show_client_info
+        else
+            error "服务启动失败"
+            systemctl status sing-box
+        fi
+    else
+        error "配置生成失败"
+    fi
+    
+    pause
+}
+
+# 交互式配置
+interactive_config() {
+    echo
+    info "开始交互式配置..."
+    echo
+    
+    # 选择协议
+    select_protocol
+    
+    # 配置端口
+    config_port
+    
+    # 配置域名
+    config_domain
+    
+    # 配置安全选项
+    config_security
+    
+    # 生成UUID
+    GENERATED_UUID=$(generate_uuid)
+    
+    echo
+    info "配置完成:"
+    echo "  协议: $SELECTED_PROTOCOL"
+    echo "  端口: $SELECTED_PORT"
+    echo "  UUID: $GENERATED_UUID"
+    if [[ "$USE_DOMAIN" == "true" ]]; then
+        echo "  域名: $DOMAIN"
+    fi
+    echo
+}
+
+# 选择协议
+select_protocol() {
+    echo "选择协议:"
+    echo
+    
+    local i=1
+    for protocol in "${PROTOCOL_LIST[@]}"; do
+        echo "$i. $protocol"
+        ((i++))
+    done
+    echo
+    
+    while true; do
+        local choice
+        reading "请选择协议 [1-${#PROTOCOL_LIST[@]}]" choice
+        
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [[ $choice -ge 1 && $choice -le ${#PROTOCOL_LIST[@]} ]]; then
+            SELECTED_PROTOCOL="${PROTOCOL_LIST[$((choice-1))]}"
+            success "已选择协议: $SELECTED_PROTOCOL"
+            break
+        else
+            warning "无效选项，请重新选择"
+        fi
+    done
+}
+
+# 配置端口
+config_port() {
+    echo
+    if confirm "是否使用随机端口?"; then
+        while true; do
+            SELECTED_PORT=$(generate_random_port)
+            if check_port "$SELECTED_PORT"; then
+                success "已生成随机端口: $SELECTED_PORT"
+                break
+            fi
+        done
+    else
+        while true; do
+            reading "请输入端口号 [$DEFAULT_PORT]" port_input
+            
+            if [[ -z "$port_input" ]]; then
+                port_input="$DEFAULT_PORT"
+            fi
+            
+            if [[ "$port_input" =~ ^[0-9]+$ ]] && [[ $port_input -ge 1 && $port_input -le 65535 ]]; then
+                if check_port "$port_input"; then
+                    SELECTED_PORT="$port_input"
+                    success "已设置端口: $SELECTED_PORT"
+                    break
+                else
+                    warning "端口 $port_input 已被占用，请选择其他端口"
+                fi
+            else
+                warning "无效的端口号，请输入 1-65535 之间的数字"
+            fi
+        done
+    fi
+}
+
+# 配置域名
+config_domain() {
+    echo
+    if confirm "是否使用域名?"; then
+        USE_DOMAIN=true
+        
+        while true; do
+            reading "请输入域名" domain_input
+            
+            if [[ -n "$domain_input" && "$domain_input" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]$ ]]; then
+                DOMAIN="$domain_input"
+                success "已设置域名: $DOMAIN"
+                break
+            else
+                warning "无效的域名格式"
+            fi
+        done
+    else
+        USE_DOMAIN=false
+        info "将使用自签名证书"
+    fi
+}
+
+# 配置安全选项
+config_security() {
+    echo
+    if confirm "是否启用端口扫描防护?"; then
+        USE_PORT_PROTECTION=true
+        success "已启用端口扫描防护"
+    else
+        USE_PORT_PROTECTION=false
+    fi
+}
+
+# 生成配置文件
+generate_config() {
+    info "正在生成配置文件..."
+    
+    # 创建基础配置
+    create_base_config
+    
+    # 根据协议添加入站配置
+    case "$SELECTED_PROTOCOL" in
+        "vless-reality")
+            add_vless_reality_inbound
+            ;;
+        "hysteria2")
+            add_hysteria2_inbound
+            ;;
+        "tuic")
+            add_tuic_inbound
+            ;;
+        "shadowtls")
+            add_shadowtls_inbound
+            ;;
+        "shadowsocks")
+            add_shadowsocks_inbound
+            ;;
+        "trojan")
+            add_trojan_inbound
+            ;;
+        *)
+            error "不支持的协议: $SELECTED_PROTOCOL"
+            return 1
+            ;;
+    esac
+    
+    # 验证配置文件
+    if /usr/local/bin/sing-box check -c "$CONFIG_FILE" >/dev/null 2>&1; then
+        success "配置文件生成成功"
+        return 0
+    else
+        error "配置文件验证失败"
+        return 1
+    fi
+}
+
+# 创建基础配置
+create_base_config() {
+    cat > "$CONFIG_FILE" << EOF
 {
   "log": {
     "level": "info",
-    "output": "$LOG_DIR/sing-box.log",
+    "output": "$LOG_FILE",
     "timestamp": true
+  },
+  "dns": {
+    "servers": [
+      {
+        "tag": "cloudflare",
+        "address": "https://1.1.1.1/dns-query",
+        "detour": "direct"
+      },
+      {
+        "tag": "local",
+        "address": "local",
+        "detour": "direct"
+      }
+    ],
+    "rules": [
+      {
+        "outbound": "any",
+        "server": "local"
+      }
+    ]
   },
   "inbounds": [],
   "outbounds": [
@@ -493,2221 +778,1046 @@ generate_base_config() {
   "route": {
     "rules": [
       {
-        "geoip": "private",
-        "outbound": "direct"
-      },
-      {
-        "geosite": "cn",
+        "protocol": "dns",
         "outbound": "direct"
       }
-    ],
-    "auto_detect_interface": true
-  }
-}
-EOF
-    
-    success "基础配置生成完成"
-}
-
-# 添加VLESS-Reality协议
-add_vless_reality() {
-    local port=$(generate_random_port)
-    local dest_port=443
-    local server_name="www.google.com"
-    # 生成Reality密钥对
-    local keypair_output
-    if ! keypair_output=$(sing-box generate reality-keypair 2>/dev/null); then
-        error_exit "无法生成Reality密钥对，请检查sing-box是否正确安装"
-    fi
-    
-    local private_key=$(echo "$keypair_output" | grep "PrivateKey" | awk '{print $2}')
-    local public_key=$(echo "$keypair_output" | grep "PublicKey" | awk '{print $2}')
-    
-    if [[ -z "$private_key" ]] || [[ -z "$public_key" ]]; then
-        error_exit "Reality密钥对生成失败"
-    fi
-    
-    log "INFO" "添加VLESS-Reality配置 (端口: $port)..."
-    
-    # 创建临时配置文件来添加inbound
-    local temp_config="/tmp/vless_reality.json"
-    cat > "$temp_config" << EOF
-{
-  "type": "vless",
-  "tag": "vless-reality-in",
-  "listen": "::",
-  "listen_port": $port,
-  "users": [
-    {
-      "uuid": "$UUID",
-      "flow": "xtls-rprx-vision"
-    }
-  ],
-  "tls": {
-    "enabled": true,
-    "server_name": "$server_name",
-    "reality": {
-      "enabled": true,
-      "handshake": {
-        "server": "$server_name",
-        "server_port": $dest_port
-      },
-      "private_key": "$private_key",
-      "short_id": ["0123456789abcdef"]
-    }
-  }
-}
-EOF
-    
-    # 将配置添加到主配置文件中
-    add_inbound_to_config "$temp_config"
-    rm -f "$temp_config"
-    
-    # 保存连接信息
-    echo "VLESS-Reality:$port:$UUID:$public_key" >> "$CONFIG_DIR/connections.txt"
-    
-    success "VLESS-Reality配置添加完成"
-}
-
-# 添加Hysteria2协议
-add_hysteria2() {
-    local port=$(generate_random_port)
-    local password=$(generate_random_password)
-    
-    log "INFO" "添加Hysteria2配置 (端口: $port)..."
-    
-    local temp_config="/tmp/hysteria2.json"
-    cat > "$temp_config" << EOF
-{
-  "type": "hysteria2",
-  "tag": "hysteria2-in",
-  "listen": "::",
-  "listen_port": $port,
-  "users": [
-    {
-      "password": "$password"
-    }
-  ],
-  "tls": {
-    "enabled": true,
-    "server_name": "www.bing.com",
-    "insecure": true
-  }
-}
-EOF
-    
-    add_inbound_to_config "$temp_config"
-    rm -f "$temp_config"
-    
-    echo "Hysteria2:$port:$password" >> "$CONFIG_DIR/connections.txt"
-    
-    success "Hysteria2配置添加完成"
-}
-
-# 添加Shadowsocks协议
-add_shadowsocks() {
-    local port=$(generate_random_port)
-    local password=$(generate_random_password)
-    local method="2022-blake3-aes-128-gcm"
-    
-    log "INFO" "添加Shadowsocks配置 (端口: $port)..."
-    
-    local temp_config="/tmp/shadowsocks.json"
-    cat > "$temp_config" << EOF
-{
-  "type": "shadowsocks",
-  "tag": "shadowsocks-in",
-  "listen": "::",
-  "listen_port": $port,
-  "method": "$method",
-  "password": "$password"
-}
-EOF
-    
-    add_inbound_to_config "$temp_config"
-    rm -f "$temp_config"
-    
-    echo "Shadowsocks:$port:$method:$password" >> "$CONFIG_DIR/connections.txt"
-    
-    success "Shadowsocks配置添加完成"
-}
-
-# 添加Trojan协议
-add_trojan() {
-    local port=$(generate_random_port)
-    local password=$(generate_random_password)
-    
-    log "INFO" "添加Trojan配置 (端口: $port)..."
-    
-    local temp_config="/tmp/trojan.json"
-    cat > "$temp_config" << EOF
-{
-  "type": "trojan",
-  "tag": "trojan-in",
-  "listen": "::",
-  "listen_port": $port,
-  "users": [
-    {
-      "password": "$password"
-    }
-  ],
-  "tls": {
-    "enabled": true,
-    "server_name": "www.microsoft.com",
-    "insecure": true
-  }
-}
-EOF
-    
-    add_inbound_to_config "$temp_config"
-    rm -f "$temp_config"
-    
-    echo "Trojan:$port:$password" >> "$CONFIG_DIR/connections.txt"
-    
-    success "Trojan配置添加完成"
-}
-
-# 工具函数：将inbound添加到主配置文件
-add_inbound_to_config() {
-    local temp_config="$1"
-    
-    # 检查配置文件是否存在
-    if [[ ! -f "$CONFIG_DIR/config.json" ]]; then
-        error_exit "配置文件不存在: $CONFIG_DIR/config.json"
-    fi
-    
-    # 使用jq来合并配置（如果没有jq，使用简单的文本处理）
-    if command -v jq >/dev/null 2>&1; then
-        local new_config
-        new_config=$(jq --argjson inbound "$(cat "$temp_config")" '.inbounds += [$inbound]' "$CONFIG_DIR/config.json")
-        echo "$new_config" > "$CONFIG_DIR/config.json"
-    else
-        # 改进的文本处理方式
-        local inbound_content
-        inbound_content=$(cat "$temp_config" | tr -d '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-        
-        # 备份原文件
-        cp "$CONFIG_DIR/config.json" "$CONFIG_DIR/config.json.bak"
-        
-        # 检查是否是空的inbounds数组
-        if grep -q '"inbounds":[[:space:]]*\[\]' "$CONFIG_DIR/config.json"; then
-            # 如果是空数组，直接添加
-            sed -i "s/\"inbounds\":[[:space:]]*\[\]/\"inbounds\": [$inbound_content]/" "$CONFIG_DIR/config.json"
-        else
-            # 使用Python处理JSON（更安全可靠）
-            if ! python3 -c "
-import json
-import sys
-try:
-    with open('$CONFIG_DIR/config.json', 'r') as f:
-        config = json.load(f)
-    
-    # 读取新的inbound配置
-    with open('$temp_config', 'r') as f:
-        new_inbound = json.load(f)
-    
-    # 添加到inbounds数组
-    config['inbounds'].append(new_inbound)
-    
-    # 写回文件
-    with open('$CONFIG_DIR/config.json', 'w') as f:
-        json.dump(config, f, indent=2)
-    print('JSON配置更新成功')
-except Exception as e:
-    print(f'Python处理失败: {e}', file=sys.stderr)
-    sys.exit(1)
-"; then
-                # Python失败，使用简化的sed方案
-                warning "Python JSON处理失败，使用备用方案"
-                # 简单地在inbounds数组末尾前添加新配置
-                local last_brace_line=$(grep -n '^[[:space:]]*]' "$CONFIG_DIR/config.json" | tail -1 | cut -d: -f1)
-                if [[ -n $last_brace_line ]]; then
-                    sed -i "${last_brace_line}i\\  ,$inbound_content" "$CONFIG_DIR/config.json"
-                else
-                    error_exit "无法找到JSON数组结束位置"
-                fi
-            fi
-        fi
-        
-        # 验证JSON格式
-        if ! python3 -m json.tool "$CONFIG_DIR/config.json" >/dev/null 2>&1; then
-            warning "JSON格式验证失败，恢复备份文件"
-            mv "$CONFIG_DIR/config.json.bak" "$CONFIG_DIR/config.json"
-        else
-            rm -f "$CONFIG_DIR/config.json.bak"
-        fi
-    fi
-}
-
-# =============================================================================
-# 安全防护模块
-# =============================================================================
-
-# 配置防火墙
-configure_firewall() {
-    log "INFO" "配置防火墙规则..."
-    
-    # 检查防火墙类型
-    if command -v ufw >/dev/null 2>&1; then
-        configure_ufw
-    elif command -v firewall-cmd >/dev/null 2>&1; then
-        configure_firewalld
-    elif command -v iptables >/dev/null 2>&1; then
-        configure_iptables
-    else
-        warning "未检测到防火墙，请手动配置端口开放"
-    fi
-}
-
-# 配置UFW防火墙
-configure_ufw() {
-    # 获取所有需要开放的端口
-    local ports=()
-    if [[ -f "$CONFIG_DIR/connections.txt" ]]; then
-        while IFS= read -r line; do
-            local port=$(echo "$line" | cut -d':' -f2)
-            ports+=("$port")
-        done < "$CONFIG_DIR/connections.txt"
-    fi
-    
-    # 开放端口
-    for port in "${ports[@]}"; do
-        ufw allow "$port" >/dev/null 2>&1
-    done
-    
-    success "UFW防火墙规则配置完成"
-}
-
-# 配置Firewalld防火墙
-configure_firewalld() {
-    local ports=()
-    if [[ -f "$CONFIG_DIR/connections.txt" ]]; then
-        while IFS= read -r line; do
-            local port=$(echo "$line" | cut -d':' -f2)
-            ports+=("$port")
-        done < "$CONFIG_DIR/connections.txt"
-    fi
-    
-    for port in "${ports[@]}"; do
-        firewall-cmd --permanent --add-port="$port/tcp" >/dev/null 2>&1
-        firewall-cmd --permanent --add-port="$port/udp" >/dev/null 2>&1
-    done
-    
-    firewall-cmd --reload >/dev/null 2>&1
-    success "Firewalld防火墙规则配置完成"
-}
-
-# 配置iptables防火墙
-configure_iptables() {
-    local ports=()
-    if [[ -f "$CONFIG_DIR/connections.txt" ]]; then
-        while IFS= read -r line; do
-            local port=$(echo "$line" | cut -d':' -f2)
-            ports+=("$port")
-        done < "$CONFIG_DIR/connections.txt"
-    fi
-    
-    for port in "${ports[@]}"; do
-        iptables -A INPUT -p tcp --dport "$port" -j ACCEPT >/dev/null 2>&1
-        iptables -A INPUT -p udp --dport "$port" -j ACCEPT >/dev/null 2>&1
-    done
-    
-    # 保存规则
-    if command -v iptables-save >/dev/null 2>&1; then
-        iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
-    fi
-    
-    success "iptables防火墙规则配置完成"
-}
-
-# 安装fail2ban
-install_fail2ban() {
-    log "INFO" "安装fail2ban防护..."
-    
-    case "$PACKAGE_MANAGER" in
-        apt)
-            apt install -y fail2ban
-            ;;
-        yum|dnf)
-            $PACKAGE_MANAGER install -y epel-release
-            $PACKAGE_MANAGER install -y fail2ban
-            ;;
-    esac
-    
-    # 创建fail2ban配置
-    cat > /etc/fail2ban/jail.d/sing-box.conf << EOF
-[sing-box]
-enabled = true
-port = 1:65535
-filter = sing-box
-logpath = $LOG_DIR/sing-box.log
-maxretry = 3
-bantime = 3600
-findtime = 600
-EOF
-    
-    # 创建过滤规则
-    cat > /etc/fail2ban/filter.d/sing-box.conf << 'EOF'
-[Definition]
-failregex = ^.*\[ERROR\].*client <HOST>.*$
-ignoreregex =
-EOF
-    
-    systemctl enable fail2ban
-    systemctl restart fail2ban
-    
-    success "fail2ban防护配置完成"
-}
-
-# =============================================================================
-# 系统优化模块
-# =============================================================================
-
-# 启用BBR
-enable_bbr() {
-    log "INFO" "启用BBR网络加速..."
-    
-    # 检查内核版本
-    local kernel_version
-    kernel_version=$(uname -r | cut -d. -f1,2)
-    
-    if ! awk "BEGIN {exit ($kernel_version >= 4.9) ? 0 : 1}"; then
-        warning "内核版本过低，BBR可能不支持"
-        return
-    fi
-    
-    # 配置BBR
-    if ! grep -q "net.core.default_qdisc" /etc/sysctl.conf; then
-        echo 'net.core.default_qdisc = fq' >> /etc/sysctl.conf
-    fi
-    
-    if ! grep -q "net.ipv4.tcp_congestion_control" /etc/sysctl.conf; then
-        echo 'net.ipv4.tcp_congestion_control = bbr' >> /etc/sysctl.conf
-    fi
-    
-    sysctl -p >/dev/null 2>&1
-    
-    success "BBR网络加速已启用"
-}
-
-# 系统参数优化
-optimize_system() {
-    log "INFO" "进行系统参数优化..."
-    
-    # 网络参数优化
-    cat >> /etc/sysctl.conf << 'EOF'
-
-# Network optimization for sing-box
-net.ipv4.tcp_fastopen = 3
-net.ipv4.tcp_syncookies = 1
-net.ipv4.tcp_tw_reuse = 1
-net.ipv4.tcp_fin_timeout = 30
-net.ipv4.tcp_keepalive_time = 1200
-net.ipv4.ip_local_port_range = 10000 65000
-net.core.rmem_max = 67108864
-net.core.wmem_max = 67108864
-net.core.netdev_max_backlog = 4096
-net.core.somaxconn = 4096
-net.ipv4.tcp_rmem = 4096 65536 67108864
-net.ipv4.tcp_wmem = 4096 65536 67108864
-net.ipv4.tcp_mtu_probing = 1
-EOF
-    
-    sysctl -p >/dev/null 2>&1
-    
-    success "系统参数优化完成"
-}
-
-# =============================================================================
-# 主菜单系统
-# =============================================================================
-
-# 显示主菜单
-show_main_menu() {
-    clear
-    echo -e "${CYAN}"
-    echo "================= Sing-box 科学上网管理面板 ================="
-    echo -e "${NC}"
-    echo -e "  ${GREEN}1.${NC} 安装 / 更新 Sing-box"
-    echo -e "  ${GREEN}2.${NC} 卸载 Sing-box"
-    echo "  -----------------------------------------------------------"
-    echo -e "  ${GREEN}3.${NC} 协议管理"
-    echo "     - 添加/删除协议"
-    echo "     - 修改协议配置"
-    echo "     - 查看协议状态"
-    echo "  -----------------------------------------------------------"
-    echo -e "  ${GREEN}4.${NC} 系统信息"
-    echo "     - 查看端口占用情况"
-    echo "     - 查看网络优化状态"
-    echo "     - 查看 fail2ban 封禁列表"
-    echo "  -----------------------------------------------------------"
-    echo -e "  ${GREEN}5.${NC} 证书管理"
-    echo "     - 自动申请/更新证书"
-    echo "     - 本地自签证书"
-    echo "     - 导入自有证书"
-    echo "  -----------------------------------------------------------"
-    echo -e "  ${GREEN}6.${NC} 防火墙与安全"
-    echo "     - BBR开关控制"
-    echo "     - TCP FastOpen设置"
-    echo "     - fail2ban配置"
-    echo "     - IP白名单/黑名单管理"
-    echo "  -----------------------------------------------------------"
-    echo -e "  ${GREEN}7.${NC} 服务管理"
-    echo "     - 启动/停止/重启服务"
-    echo "     - 查看运行状态"
-    echo "     - 查看系统日志"
-    echo "  -----------------------------------------------------------"
-    echo -e "  ${GREEN}8.${NC} 客户端配置"
-    echo "     - 生成订阅链接"
-    echo "     - 生成配置二维码"
-    echo "     - 查看节点信息"
-    echo "  -----------------------------------------------------------"
-    echo -e "  ${GREEN}9.${NC} 高级设置"
-    echo "     - CDN配置"
-    echo "     - 伪装站点设置"
-    echo "     - TLS指纹配置"
-    echo "     - 多入口配置"
-    echo "  -----------------------------------------------------------"
-    echo -e "${CYAN}"
-    echo "============================================================="
-    echo -e "${NC}"
-    echo -e "  ${RED}0.${NC} 退出"
-    echo ""
-    echo -ne "请选择操作 [0-9]: "
-}
-
-# 处理主菜单选择
-handle_main_menu() {
-    local choice
-    read -r choice
-    
-    case $choice in
-        1) install_menu ;;
-        2) uninstall_menu ;;
-        3) protocol_menu ;;
-        4) system_info_menu ;;
-        5) certificate_menu ;;
-        6) security_menu ;;
-        7) service_menu ;;
-        8) client_config_menu ;;
-        9) advanced_menu ;;
-        0) exit 0 ;;
-        *) 
-            echo -e "${RED}无效选择，请重新输入${NC}"
-            sleep 2
-            ;;
-    esac
-}
-
-# 安装菜单
-install_menu() {
-    log "INFO" "开始安装Sing-box..."
-    
-    # 系统检测
-    detect_os
-    detect_arch
-    check_system_requirements
-    
-    # 安装依赖
-    install_dependencies
-    
-    # 下载并安装Sing-box
-    get_latest_version
-    download_sing_box
-    install_sing_box "$DOWNLOAD_FILE"
-    
-    # 创建服务
-    create_systemd_service
-    
-    # 生成配置
-    generate_base_config
-    
-    # 添加默认协议
-    add_vless_reality
-    add_hysteria2
-    add_shadowsocks
-    add_trojan
-    add_anytls
-    
-    # 配置安全
-    configure_firewall
-    install_fail2ban
-    
-    # 系统优化
-    enable_bbr
-    optimize_system
-    
-    # 启动服务
-    systemctl start sing-box
-    
-    success "Sing-box安装完成！"
-    show_connection_info
-    
-    echo -e "\n按回车键返回主菜单..."
-    read -r
-}
-
-# 显示连接信息
-show_connection_info() {
-    echo -e "\n${CYAN}=== 连接信息 ===${NC}"
-    
-    if [[ -f "$CONFIG_DIR/connections.txt" ]]; then
-        local server_ip
-        server_ip=$(curl -s ipinfo.io/ip || curl -s ifconfig.me || echo "获取失败")
-        
-        while IFS= read -r line; do
-            local protocol=$(echo "$line" | cut -d':' -f1)
-            local port=$(echo "$line" | cut -d':' -f2)
-            
-            echo -e "\n${GREEN}[$protocol]${NC}"
-            echo -e "服务器地址: ${YELLOW}$server_ip${NC}"
-            echo -e "端口: ${YELLOW}$port${NC}"
-            
-            case $protocol in
-                "VLESS-Reality")
-                    local uuid=$(echo "$line" | cut -d':' -f3)
-                    local public_key=$(echo "$line" | cut -d':' -f4)
-                    echo -e "UUID: ${YELLOW}$uuid${NC}"
-                    echo -e "公钥: ${YELLOW}$public_key${NC}"
-                    ;;
-                "Hysteria2"|"Trojan"|"AnyTLS")
-                    local password=$(echo "$line" | cut -d':' -f3)
-                    echo -e "密码: ${YELLOW}$password${NC}"
-                    ;;
-                "Shadowsocks")
-                    local method=$(echo "$line" | cut -d':' -f3)
-                    local password=$(echo "$line" | cut -d':' -f4)
-                    echo -e "加密方法: ${YELLOW}$method${NC}"
-                    echo -e "密码: ${YELLOW}$password${NC}"
-                    ;;
-            esac
-        done < "$CONFIG_DIR/connections.txt"
-    else
-        echo -e "${RED}未找到连接信息文件${NC}"
-    fi
-}
-
-# 卸载菜单
-uninstall_menu() {
-    echo -e "${RED}警告: 此操作将完全删除Sing-box及其配置文件！${NC}"
-    echo -ne "确认卸载? [y/N]: "
-    read -r confirm
-    
-    if [[ $confirm =~ ^[Yy]$ ]]; then
-        log "INFO" "开始卸载Sing-box..."
-        
-        # 停止服务
-        systemctl stop sing-box 2>/dev/null || true
-        systemctl disable sing-box 2>/dev/null || true
-        
-        # 删除服务文件
-        rm -f /etc/systemd/system/sing-box.service
-        systemctl daemon-reload
-        
-        # 删除二进制文件
-        rm -f /usr/local/bin/sing-box
-        
-        # 删除配置目录
-        rm -rf "$CONFIG_DIR"
-        rm -rf "$LOG_DIR"
-        
-        # 删除fail2ban配置
-        rm -f /etc/fail2ban/jail.d/sing-box.conf
-        rm -f /etc/fail2ban/filter.d/sing-box.conf
-        systemctl restart fail2ban 2>/dev/null || true
-        
-        success "Sing-box卸载完成"
-    else
-        log "INFO" "取消卸载操作"
-    fi
-    
-    echo -e "\n按回车键返回主菜单..."
-    read -r
-}
-
-# 协议管理菜单
-protocol_menu() {
-    while true; do
-        clear
-        echo -e "${CYAN}=== 协议管理 ===${NC}\n"
-        echo -e "  ${GREEN}1.${NC} 添加协议"
-        echo -e "  ${GREEN}2.${NC} 删除协议"
-        echo -e "  ${GREEN}3.${NC} 查看协议状态"
-        echo -e "  ${GREEN}4.${NC} 重新生成配置"
-        echo -e "  ${RED}0.${NC} 返回主菜单"
-        echo ""
-        echo -ne "请选择操作 [0-4]: "
-        
-        local choice
-        read -r choice
-        
-        case $choice in
-            1) add_protocol_menu ;;
-            2) remove_protocol_menu ;;
-            3) show_protocol_status ;;
-            4) regenerate_config ;;
-            0) break ;;
-            *) 
-                echo -e "${RED}无效选择${NC}"
-                sleep 1
-                ;;
-        esac
-    done
-}
-
-# 添加协议菜单
-add_protocol_menu() {
-    clear
-    echo -e "${CYAN}=== 添加协议 ===${NC}\n"
-    echo -e "  ${GREEN}1.${NC} VLESS-Reality"
-    echo -e "  ${GREEN}2.${NC} Hysteria2"
-    echo -e "  ${GREEN}3.${NC} TUIC"
-    echo -e "  ${GREEN}4.${NC} ShadowTLS"
-    echo -e "  ${GREEN}5.${NC} Shadowsocks"
-    echo -e "  ${GREEN}6.${NC} Trojan"
-    echo -e "  ${GREEN}7.${NC} VMess-WS"
-    echo -e "  ${GREEN}8.${NC} VLESS-WS"
-    echo -e "  ${GREEN}9.${NC} H2-Reality"
-    echo -e "  ${GREEN}10.${NC} gRPC-Reality"
-    echo -e "  ${GREEN}11.${NC} AnyTLS"
-    echo -e "  ${GREEN}12.${NC} 添加所有协议"
-    echo -e "  ${RED}0.${NC} 返回"
-    echo ""
-    echo -ne "请选择要添加的协议 [0-12]: "
-    
-    local choice
-    read -r choice
-    
-    case $choice in
-        1) add_vless_reality ;;
-        2) add_hysteria2 ;;
-        3) add_tuic ;;
-        4) add_shadowtls ;;
-        5) add_shadowsocks ;;
-        6) add_trojan ;;
-        7) add_vmess_ws ;;
-        8) add_vless_ws ;;
-        9) add_h2_reality ;;
-        10) add_grpc_reality ;;
-        11) add_anytls ;;
-        12) add_all_protocols ;;
-        0) return ;;
-        *) 
-            echo -e "${RED}无效选择${NC}"
-            sleep 1
-            ;;
-    esac
-    
-    # 重启服务以应用新配置
-    systemctl restart sing-box
-    echo -e "\n按回车键继续..."
-    read -r
-}
-
-# 添加TUIC协议
-add_tuic() {
-    local port=$(generate_random_port)
-    local password=$(generate_random_password)
-    
-    log "INFO" "添加TUIC配置 (端口: $port)..."
-    
-    local temp_config="/tmp/tuic.json"
-    cat > "$temp_config" << EOF
-{
-  "type": "tuic",
-  "tag": "tuic-in",
-  "listen": "::",
-  "listen_port": $port,
-  "users": [
-    {
-      "uuid": "$UUID",
-      "password": "$password"
-    }
-  ],
-  "congestion_control": "cubic",
-  "auth_timeout": "3s",
-  "zero_rtt_handshake": false,
-  "heartbeat": "10s"
-}
-EOF
-    
-    add_inbound_to_config "$temp_config"
-    rm -f "$temp_config"
-    
-    echo "TUIC:$port:$password" >> "$CONFIG_DIR/connections.txt"
-    
-    success "TUIC配置添加完成"
-}
-
-# 添加ShadowTLS协议
-add_shadowtls() {
-    local port=$(generate_random_port)
-    local password=$(generate_random_password)
-    
-    log "INFO" "添加ShadowTLS配置 (端口: $port)..."
-    
-    local temp_config="/tmp/shadowtls.json"
-    cat > "$temp_config" << EOF
-{
-  "type": "shadowtls",
-  "tag": "shadowtls-in",
-  "listen": "::",
-  "listen_port": $port,
-  "version": 3,
-  "password": "$password",
-  "users": [
-    {
-      "password": "$password"
-    }
-  ],
-  "handshake": {
-    "server": "www.cloudflare.com",
-    "server_port": 443
-  }
-}
-EOF
-    
-    add_inbound_to_config "$temp_config"
-    rm -f "$temp_config"
-    
-    echo "ShadowTLS:$port:$password" >> "$CONFIG_DIR/connections.txt"
-    
-    success "ShadowTLS配置添加完成"
-}
-
-# 添加VMess-WS协议
-add_vmess_ws() {
-    local port=$(generate_random_port)
-    local path="/$(generate_random_path)"
-    
-    log "INFO" "添加VMess-WS配置 (端口: $port)..."
-    
-    local temp_config="/tmp/vmess_ws.json"
-    cat > "$temp_config" << EOF
-{
-  "type": "vmess",
-  "tag": "vmess-ws-in",
-  "listen": "::",
-  "listen_port": $port,
-  "users": [
-    {
-      "uuid": "$UUID",
-      "alterId": 0
-    }
-  ],
-  "transport": {
-    "type": "ws",
-    "path": "$path",
-    "max_early_data": 0,
-    "early_data_header_name": "Sec-WebSocket-Protocol"
-  }
-}
-EOF
-    
-    add_inbound_to_config "$temp_config"
-    rm -f "$temp_config"
-    
-    echo "VMess-WS:$port:$path" >> "$CONFIG_DIR/connections.txt"
-    
-    success "VMess-WS配置添加完成"
-}
-
-# 添加VLESS-WS协议
-add_vless_ws() {
-    local port=$(generate_random_port)
-    local path="/$(generate_random_path)"
-    
-    log "INFO" "添加VLESS-WS配置 (端口: $port)..."
-    
-    local temp_config="/tmp/vless_ws.json"
-    cat > "$temp_config" << EOF
-{
-  "type": "vless",
-  "tag": "vless-ws-in",
-  "listen": "::",
-  "listen_port": $port,
-  "users": [
-    {
-      "uuid": "$UUID"
-    }
-  ],
-  "transport": {
-    "type": "ws",
-    "path": "$path",
-    "max_early_data": 0,
-    "early_data_header_name": "Sec-WebSocket-Protocol"
-  }
-}
-EOF
-    
-    add_inbound_to_config "$temp_config"
-    rm -f "$temp_config"
-    
-    echo "VLESS-WS:$port:$path" >> "$CONFIG_DIR/connections.txt"
-    
-    success "VLESS-WS配置添加完成"
-}
-
-# 添加H2-Reality协议
-add_h2_reality() {
-    local port=$(generate_random_port)
-    local server_name="www.microsoft.com"
-    # 生成Reality密钥对
-    local keypair_output
-    if ! keypair_output=$(sing-box generate reality-keypair 2>/dev/null); then
-        error_exit "无法生成Reality密钥对，请检查sing-box是否正确安装"
-    fi
-    
-    local private_key=$(echo "$keypair_output" | grep "PrivateKey" | awk '{print $2}')
-    local public_key=$(echo "$keypair_output" | grep "PublicKey" | awk '{print $2}')
-    
-    if [[ -z "$private_key" ]] || [[ -z "$public_key" ]]; then
-        error_exit "Reality密钥对生成失败"
-    fi
-    
-    log "INFO" "添加H2-Reality配置 (端口: $port)..."
-    
-    local temp_config="/tmp/h2_reality.json"
-    cat > "$temp_config" << EOF
-{
-  "type": "vless",
-  "tag": "h2-reality-in",
-  "listen": "::",
-  "listen_port": $port,
-  "users": [
-    {
-      "uuid": "$UUID",
-      "flow": ""
-    }
-  ],
-  "tls": {
-    "enabled": true,
-    "server_name": "$server_name",
-    "reality": {
-      "enabled": true,
-      "handshake": {
-        "server": "$server_name",
-        "server_port": 443
-      },
-      "private_key": "$private_key",
-      "short_id": ["0123456789abcdef"]
-    }
-  },
-  "transport": {
-    "type": "http"
-  }
-}
-EOF
-    
-    add_inbound_to_config "$temp_config"
-    rm -f "$temp_config"
-    
-    echo "H2-Reality:$port:$UUID:$public_key" >> "$CONFIG_DIR/connections.txt"
-    
-    success "H2-Reality配置添加完成"
-}
-
-# 添加gRPC-Reality协议
-add_grpc_reality() {
-    local port=$(generate_random_port)
-    local server_name="www.apple.com"
-    local service_name="$(generate_random_path)"
-    # 生成Reality密钥对
-    local keypair_output
-    if ! keypair_output=$(sing-box generate reality-keypair 2>/dev/null); then
-        error_exit "无法生成Reality密钥对，请检查sing-box是否正确安装"
-    fi
-    
-    local private_key=$(echo "$keypair_output" | grep "PrivateKey" | awk '{print $2}')
-    local public_key=$(echo "$keypair_output" | grep "PublicKey" | awk '{print $2}')
-    
-    if [[ -z "$private_key" ]] || [[ -z "$public_key" ]]; then
-        error_exit "Reality密钥对生成失败"
-    fi
-    
-    log "INFO" "添加gRPC-Reality配置 (端口: $port)..."
-    
-    local temp_config="/tmp/grpc_reality.json"
-    cat > "$temp_config" << EOF
-{
-  "type": "vless",
-  "tag": "grpc-reality-in",
-  "listen": "::",
-  "listen_port": $port,
-  "users": [
-    {
-      "uuid": "$UUID",
-      "flow": ""
-    }
-  ],
-  "tls": {
-    "enabled": true,
-    "server_name": "$server_name",
-    "reality": {
-      "enabled": true,
-      "handshake": {
-        "server": "$server_name",
-        "server_port": 443
-      },
-      "private_key": "$private_key",
-      "short_id": ["0123456789abcdef"]
-    }
-  },
-  "transport": {
-    "type": "grpc",
-    "service_name": "$service_name"
-  }
-}
-EOF
-    
-    add_inbound_to_config "$temp_config"
-    rm -f "$temp_config"
-    
-    echo "gRPC-Reality:$port:$service_name:$public_key" >> "$CONFIG_DIR/connections.txt"
-    
-    success "gRPC-Reality配置添加完成"
-}
-
-# 添加AnyTLS协议
-add_anytls() {
-    local port=$(generate_random_port)
-    local password=$(generate_random_password)
-    
-    log "INFO" "添加AnyTLS配置 (端口: $port)..."
-    
-    local temp_config="/tmp/anytls.json"
-    cat > "$temp_config" << EOF
-{
-  "type": "trojan",
-  "tag": "anytls-in",
-  "listen": "::",
-  "listen_port": $port,
-  "users": [
-    {
-      "password": "$password"
-    }
-  ],
-  "tls": {
-    "enabled": true,
-    "server_name": "www.cloudflare.com",
-    "insecure": false,
-    "min_version": "1.2",
-    "max_version": "1.3",
-    "cipher_suites": [
-      "TLS_AES_128_GCM_SHA256",
-      "TLS_AES_256_GCM_SHA384",
-      "TLS_CHACHA20_POLY1305_SHA256"
-    ],
-    "curve_preferences": [
-      "X25519",
-      "P-256",
-      "P-384"
     ]
   }
 }
 EOF
-    
-    add_inbound_to_config "$temp_config"
-    rm -f "$temp_config"
-    
-    echo "AnyTLS:$port:$password" >> "$CONFIG_DIR/connections.txt"
-    
-    success "AnyTLS配置添加完成"
 }
 
-# 添加所有协议
-add_all_protocols() {
-    log "INFO" "添加所有协议配置..."
+# 添加VLESS-Reality入站配置
+add_vless_reality_inbound() {
+    info "配置 VLESS-Reality..."
     
-    add_vless_reality
-    add_hysteria2
-    add_tuic
-    add_shadowtls
-    add_shadowsocks
-    add_trojan
-    add_vmess_ws
-    add_vless_ws
-    add_h2_reality
-    add_grpc_reality
-    add_anytls
+    # 生成Reality密钥对
+    local keypair_output
+    keypair_output=$(/usr/local/bin/sing-box generate reality-keypair 2>/dev/null)
     
-    success "所有协议配置添加完成"
+    if [[ -z "$keypair_output" ]]; then
+        error "生成 Reality 密钥对失败"
+        return 1
+    fi
+    
+    local private_key
+    local public_key
+    private_key=$(echo "$keypair_output" | grep "PrivateKey" | awk '{print $2}')
+    public_key=$(echo "$keypair_output" | grep "PublicKey" | awk '{print $2}')
+    
+    # 生成short_id
+    local short_id
+    short_id=$(openssl rand -hex 8)
+    
+    # Reality目标网站
+    local dest="www.microsoft.com:443"
+    local server_name="www.microsoft.com"
+    
+    # 保存公钥和short_id供客户端使用
+    echo "$public_key" > "$WORK_DIR/reality_public_key"
+    echo "$short_id" > "$WORK_DIR/reality_short_id"
+    
+    # 添加入站配置
+    jq --arg port "$SELECTED_PORT" \
+       --arg uuid "$GENERATED_UUID" \
+       --arg private_key "$private_key" \
+       --arg short_id "$short_id" \
+       --arg dest "$dest" \
+       --arg server_name "$server_name" '
+    .inbounds += [{
+      "type": "vless",
+      "tag": "vless-reality",
+      "listen": "::",
+      "listen_port": ($port | tonumber),
+      "users": [
+        {
+          "uuid": $uuid,
+          "flow": "xtls-rprx-vision"
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "server_name": $server_name,
+        "reality": {
+          "enabled": true,
+          "handshake": {
+            "server": $dest,
+            "server_port": 443
+          },
+          "private_key": $private_key,
+          "short_id": [$short_id]
+        }
+      },
+      "multiplex": {
+        "enabled": true
+      }
+    }]' "$CONFIG_FILE" > "/tmp/config.json" && mv "/tmp/config.json" "$CONFIG_FILE"
+    
+    success "VLESS-Reality 配置完成"
 }
 
-# 服务管理菜单
-service_menu() {
-    while true; do
-        clear
-        echo -e "${CYAN}=== 服务管理 ===${NC}\n"
-        
-        # 显示服务状态
-        local status
-        if systemctl is-active sing-box >/dev/null 2>&1; then
-            status="${GREEN}运行中${NC}"
+# 添加Hysteria2入站配置
+add_hysteria2_inbound() {
+    info "配置 Hysteria2..."
+    
+    local cert_path
+    local key_path
+    
+    if [[ "$USE_DOMAIN" == "true" ]]; then
+        # 申请域名证书
+        if setup_domain_certificate "$DOMAIN"; then
+            cert_path="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
+            key_path="/etc/letsencrypt/live/$DOMAIN/privkey.pem"
         else
-            status="${RED}已停止${NC}"
+            warning "域名证书申请失败，使用自签名证书"
+            generate_self_signed_cert "$DOMAIN"
+            cert_path="$CERT_DIR/fullchain.pem"
+            key_path="$CERT_DIR/privkey.pem"
         fi
-        
-        echo -e "当前状态: $status\n"
-        
-        echo -e "  ${GREEN}1.${NC} 启动服务"
-        echo -e "  ${GREEN}2.${NC} 停止服务"
-        echo -e "  ${GREEN}3.${NC} 重启服务"
-        echo -e "  ${GREEN}4.${NC} 查看状态"
-        echo -e "  ${GREEN}5.${NC} 查看日志"
-        echo -e "  ${GREEN}6.${NC} 实时日志"
-        echo -e "  ${RED}0.${NC} 返回主菜单"
-        echo ""
-        echo -ne "请选择操作 [0-6]: "
-        
-        local choice
-        read -r choice
-        
-        case $choice in
-            1) 
-                systemctl start sing-box
-                success "服务已启动"
-                ;;
-            2) 
-                systemctl stop sing-box
-                success "服务已停止"
-                ;;
-            3) 
-                systemctl restart sing-box
-                success "服务已重启"
-                ;;
-            4) 
-                systemctl status sing-box
-                ;;
-            5) 
-                journalctl -u sing-box --no-pager
-                ;;
-            6) 
-                echo "按Ctrl+C退出日志监控"
-                journalctl -u sing-box -f
-                ;;
-            0) break ;;
-            *) 
-                echo -e "${RED}无效选择${NC}"
-                sleep 1
-                ;;
-        esac
-        
-        if [[ $choice != 6 ]]; then
-            echo -e "\n按回车键继续..."
-            read -r
-        fi
-    done
-}
-
-# 客户端配置菜单
-client_config_menu() {
-    while true; do
-        clear
-        echo -e "${CYAN}=== 客户端配置 ===${NC}\n"
-        echo -e "  ${GREEN}1.${NC} 生成订阅链接"
-        echo -e "  ${GREEN}2.${NC} 生成配置二维码"
-        echo -e "  ${GREEN}3.${NC} 查看节点信息"
-        echo -e "  ${GREEN}4.${NC} 导出配置文件"
-        echo -e "  ${RED}0.${NC} 返回主菜单"
-        echo ""
-        echo -ne "请选择操作 [0-4]: "
-        
-        local choice
-        read -r choice
-        
-        case $choice in
-            1) generate_subscription ;;
-            2) generate_qrcode ;;
-            3) show_connection_info ;;
-            4) export_configs ;;
-            0) break ;;
-            *) 
-                echo -e "${RED}无效选择${NC}"
-                sleep 1
-                ;;
-        esac
-        
-        echo -e "\n按回车键继续..."
-        read -r
-    done
-}
-
-# 生成订阅链接
-generate_subscription() {
-    log "INFO" "生成订阅链接..."
-    
-    local server_ip
-    server_ip=$(curl -s ipinfo.io/ip || curl -s ifconfig.me || echo "127.0.0.1")
-    
-    local subscription_content=""
-    
-    if [[ -f "$CONFIG_DIR/connections.txt" ]]; then
-        while IFS= read -r line; do
-            local protocol=$(echo "$line" | cut -d':' -f1)
-            local port=$(echo "$line" | cut -d':' -f2)
-            
-            case $protocol in
-                "VLESS-Reality")
-                    local uuid=$(echo "$line" | cut -d':' -f3)
-                    local public_key=$(echo "$line" | cut -d':' -f4)
-                    local vless_url="vless://${uuid}@${server_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.google.com&fp=chrome&pbk=${public_key}&sid=0123456789abcdef&type=tcp&headerType=none#VLESS-Reality-${port}"
-                    subscription_content+="${vless_url}\n"
-                    ;;
-                "Shadowsocks")
-                    local method=$(echo "$line" | cut -d':' -f3)
-                    local password=$(echo "$line" | cut -d':' -f4)
-                    local ss_url="ss://$(echo -n "${method}:${password}" | base64 -w 0)@${server_ip}:${port}#Shadowsocks-${port}"
-                    subscription_content+="${ss_url}\n"
-                    ;;
-                "Trojan")
-                    local password=$(echo "$line" | cut -d':' -f3)
-                    local trojan_url="trojan://${password}@${server_ip}:${port}?security=tls&sni=www.microsoft.com&type=tcp&headerType=none#Trojan-${port}"
-                    subscription_content+="${trojan_url}\n"
-                    ;;
-                "AnyTLS")
-                    local password=$(echo "$line" | cut -d':' -f3)
-                    local anytls_url="trojan://${password}@${server_ip}:${port}?security=tls&sni=www.cloudflare.com&type=tcp&headerType=none#AnyTLS-${port}"
-                    subscription_content+="${anytls_url}\n"
-                    ;;
-            esac
-        done < "$CONFIG_DIR/connections.txt"
-        
-        # 保存订阅内容
-        local subscription_file="$CONFIG_DIR/subscription.txt"
-        echo -e "$subscription_content" > "$subscription_file"
-        
-        # 生成base64编码的订阅链接
-        local encoded_subscription
-        encoded_subscription=$(echo -e "$subscription_content" | base64 -w 0)
-        
-        echo -e "\n${GREEN}订阅链接生成完成:${NC}"
-        echo -e "${YELLOW}data:text/plain;charset=utf-8;base64,$encoded_subscription${NC}"
-        echo -e "\n订阅文件保存位置: $subscription_file"
     else
-        echo -e "${RED}未找到连接信息${NC}"
-    fi
-}
-
-# 生成二维码
-generate_qrcode() {
-    if ! command -v qrencode >/dev/null 2>&1; then
-        echo -e "${RED}qrencode未安装，正在安装...${NC}"
-        case "$PACKAGE_MANAGER" in
-            apt) apt install -y qrencode ;;
-            yum|dnf) $PACKAGE_MANAGER install -y qrencode ;;
-        esac
+        # 生成自签名证书
+        generate_self_signed_cert "localhost"
+        cert_path="$CERT_DIR/fullchain.pem"
+        key_path="$CERT_DIR/privkey.pem"
     fi
     
-    echo -e "${CYAN}选择要生成二维码的协议:${NC}\n"
-    
-    local count=1
-    if [[ -f "$CONFIG_DIR/connections.txt" ]]; then
-        while IFS= read -r line; do
-            local protocol=$(echo "$line" | cut -d':' -f1)
-            local port=$(echo "$line" | cut -d':' -f2)
-            echo -e "  ${GREEN}$count.${NC} $protocol (端口: $port)"
-            ((count++))
-        done < "$CONFIG_DIR/connections.txt"
-    fi
-    
-    echo ""
-    echo -ne "请选择 [1-$((count-1))]: "
-    read -r choice
-    
-    # 这里可以根据选择生成对应的二维码
-    echo -e "${YELLOW}二维码生成功能开发中...${NC}"
-}
-
-# 导出配置文件
-export_configs() {
-    local export_dir="$HOME/sing-box-configs"
-    mkdir -p "$export_dir"
-    
-    # 复制配置文件
-    cp -r "$CONFIG_DIR"/* "$export_dir/" 2>/dev/null
-    
-    # 生成客户端配置
-    generate_client_configs "$export_dir"
-    
-    success "配置文件已导出到: $export_dir"
-}
-
-# 生成客户端配置
-generate_client_configs() {
-    local export_dir="$1"
-    
-    # 为不同客户端生成配置
-    mkdir -p "$export_dir/clients"
-    
-    # 生成Clash配置
-    generate_clash_config "$export_dir/clients/clash.yaml"
-    
-    # 生成v2rayN配置
-    generate_v2rayn_config "$export_dir/clients/v2rayn.json"
-    
-    success "客户端配置生成完成"
-}
-
-# 生成Clash配置
-generate_clash_config() {
-    local output_file="$1"
-    local server_ip
-    server_ip=$(curl -s ipinfo.io/ip || curl -s ifconfig.me || echo "127.0.0.1")
-    
-    cat > "$output_file" << EOF
-mixed-port: 7890
-allow-lan: true
-mode: rule
-log-level: info
-external-controller: 127.0.0.1:9090
-
-proxies:
-EOF
-    
-    if [[ -f "$CONFIG_DIR/connections.txt" ]]; then
-        while IFS= read -r line; do
-            local protocol=$(echo "$line" | cut -d':' -f1)
-            local port=$(echo "$line" | cut -d':' -f2)
-            
-            case $protocol in
-                "Shadowsocks")
-                    local method=$(echo "$line" | cut -d':' -f3)
-                    local password=$(echo "$line" | cut -d':' -f4)
-                    cat >> "$output_file" << EOF
-  - name: "Shadowsocks-$port"
-    type: ss
-    server: $server_ip
-    port: $port
-    cipher: $method
-    password: "$password"
-    
-EOF
-                    ;;
-            esac
-        done < "$CONFIG_DIR/connections.txt"
-    fi
-    
-    cat >> "$output_file" << 'EOF'
-proxy-groups:
-  - name: "Proxy"
-    type: select
-    proxies:
-      - "Auto"
-  - name: "Auto"
-    type: url-test
-    proxies: []
-    url: 'http://www.gstatic.com/generate_204'
-    interval: 300
-
-rules:
-  - DOMAIN-SUFFIX,google.com,Proxy
-  - DOMAIN-KEYWORD,google,Proxy
-  - DOMAIN,google.com,Proxy
-  - GEOIP,CN,DIRECT
-  - MATCH,Proxy
-EOF
-}
-
-# 生成v2rayN配置
-generate_v2rayn_config() {
-    local output_file="$1"
-    
-    cat > "$output_file" << 'EOF'
-{
-  "log": {
-    "access": "",
-    "error": "",
-    "loglevel": "warning"
-  },
-  "inbounds": [
-    {
-      "tag": "socks",
-      "port": 10808,
-      "listen": "127.0.0.1",
-      "protocol": "socks",
-      "sniffing": {
+    # 添加入站配置
+    jq --arg port "$SELECTED_PORT" \
+       --arg uuid "$GENERATED_UUID" \
+       --arg cert_path "$cert_path" \
+       --arg key_path "$key_path" \
+       --arg domain "${DOMAIN:-localhost}" '
+    .inbounds += [{
+      "type": "hysteria2",
+      "tag": "hysteria2",
+      "listen": "::",
+      "listen_port": ($port | tonumber),
+      "users": [
+        {
+          "password": $uuid
+        }
+      ],
+      "tls": {
         "enabled": true,
-        "destOverride": ["http", "tls"]
+        "server_name": $domain,
+        "alpn": ["h3"],
+        "certificate_path": $cert_path,
+        "key_path": $key_path
       },
-      "settings": {
-        "auth": "noauth",
-        "udp": true
+      "masquerade": "https://www.bing.com"
+    }]' "$CONFIG_FILE" > "/tmp/config.json" && mv "/tmp/config.json" "$CONFIG_FILE"
+    
+    success "Hysteria2 配置完成"
+}
+
+# 添加Shadowsocks入站配置
+add_shadowsocks_inbound() {
+    info "配置 Shadowsocks..."
+    
+    # 添加入站配置
+    jq --arg port "$SELECTED_PORT" \
+       --arg uuid "$GENERATED_UUID" '
+    .inbounds += [{
+      "type": "shadowsocks",
+      "tag": "shadowsocks",
+      "listen": "::",
+      "listen_port": ($port | tonumber),
+      "method": "chacha20-ietf-poly1305",
+      "password": $uuid,
+      "multiplex": {
+        "enabled": true
       }
-    },
-    {
-      "tag": "http",
-      "port": 10809,
-      "listen": "127.0.0.1",
-      "protocol": "http",
-      "sniffing": {
+    }]' "$CONFIG_FILE" > "/tmp/config.json" && mv "/tmp/config.json" "$CONFIG_FILE"
+    
+    success "Shadowsocks 配置完成"
+}
+
+# 添加TUIC入站配置
+add_tuic_inbound() {
+    info "配置 TUIC..."
+    
+    # 处理证书
+    local cert_path key_path
+    if [[ "$USE_DOMAIN" == "true" ]]; then
+        if setup_domain_certificate "$DOMAIN"; then
+            cert_path="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
+            key_path="/etc/letsencrypt/live/$DOMAIN/privkey.pem"
+        else
+            warning "域名证书申请失败，使用自签名证书"
+            generate_self_signed_cert "$DOMAIN"
+            cert_path="$CERT_DIR/fullchain.pem"
+            key_path="$CERT_DIR/privkey.pem"
+        fi
+    else
+        generate_self_signed_cert "localhost"
+        cert_path="$CERT_DIR/fullchain.pem"
+        key_path="$CERT_DIR/privkey.pem"
+    fi
+    
+    # 添加入站配置
+    jq --arg port "$SELECTED_PORT" \
+       --arg uuid "$GENERATED_UUID" \
+       --arg cert "$cert_path" \
+       --arg key "$key_path" '
+    .inbounds += [{
+      "type": "tuic",
+      "tag": "tuic",
+      "listen": "::",
+      "listen_port": ($port | tonumber),
+      "users": [{
+        "uuid": $uuid,
+        "password": $uuid
+      }],
+      "congestion_control": "bbr",
+      "zero_rtt_handshake": false,
+      "tls": {
         "enabled": true,
-        "destOverride": ["http", "tls"]
-      },
-      "settings": {
-        "udp": false
+        "alpn": ["h3"],
+        "certificate_path": $cert,
+        "key_path": $key
       }
-    }
-  ],
-  "outbounds": [],
-  "routing": {
-    "domainStrategy": "IPIfNonMatch",
-    "rules": []
-  }
-}
-EOF
+    }]' "$CONFIG_FILE" > "/tmp/config.json" && mv "/tmp/config.json" "$CONFIG_FILE"
+    
+    success "TUIC 配置完成"
 }
 
-# 系统信息菜单
-system_info_menu() {
-    while true; do
-        clear
-        echo -e "${CYAN}=== 系统信息 ===${NC}\n"
-        echo -e "  ${GREEN}1.${NC} 查看端口占用情况"
-        echo -e "  ${GREEN}2.${NC} 查看网络优化状态"
-        echo -e "  ${GREEN}3.${NC} 查看fail2ban状态"
-        echo -e "  ${GREEN}4.${NC} 查看系统资源"
-        echo -e "  ${GREEN}5.${NC} 查看Sing-box版本"
-        echo -e "  ${RED}0.${NC} 返回主菜单"
-        echo ""
-        echo -ne "请选择操作 [0-5]: "
-        
-        local choice
-        read -r choice
-        
-        case $choice in
-            1) show_port_usage ;;
-            2) show_network_optimization ;;
-            3) show_fail2ban_status ;;
-            4) show_system_resources ;;
-            5) show_version_info ;;
-            0) break ;;
-            *) 
-                echo -e "${RED}无效选择${NC}"
-                sleep 1
-                ;;
-        esac
-        
-        echo -e "\n按回车键继续..."
-        read -r
-    done
+# 添加ShadowTLS入站配置
+add_shadowtls_inbound() {
+    info "配置 ShadowTLS..."
+    
+    # 添加ShadowTLS和内部Shadowsocks入站配置
+    jq --arg port "$SELECTED_PORT" \
+       --arg uuid "$GENERATED_UUID" '
+    .inbounds += [
+      {
+        "type": "shadowtls",
+        "tag": "shadowtls",
+        "listen": "::",
+        "listen_port": ($port | tonumber),
+        "detour": "shadowtls-in",
+        "version": 3,
+        "users": [{
+          "password": $uuid
+        }],
+        "handshake": {
+          "server": "www.microsoft.com",
+          "server_port": 443
+        },
+        "strict_mode": true
+      },
+      {
+        "type": "shadowsocks",
+        "tag": "shadowtls-in",
+        "listen": "127.0.0.1",
+        "network": "tcp",
+        "method": "chacha20-ietf-poly1305",
+        "password": $uuid,
+        "multiplex": {
+          "enabled": true,
+          "padding": true
+        }
+      }
+    ]' "$CONFIG_FILE" > "/tmp/config.json" && mv "/tmp/config.json" "$CONFIG_FILE"
+    
+    success "ShadowTLS 配置完成"
 }
 
-# 显示端口占用情况
-show_port_usage() {
-    echo -e "${CYAN}=== 端口占用情况 ===${NC}\n"
+# 添加Trojan入站配置
+add_trojan_inbound() {
+    info "配置 Trojan..."
     
-    if [[ -f "$CONFIG_DIR/connections.txt" ]]; then
-        echo -e "${GREEN}Sing-box使用的端口:${NC}"
-        while IFS= read -r line; do
-            local protocol=$(echo "$line" | cut -d':' -f1)
-            local port=$(echo "$line" | cut -d':' -f2)
-            echo -e "  $protocol: ${YELLOW}$port${NC}"
-        done < "$CONFIG_DIR/connections.txt"
-        echo ""
-    fi
-    
-    echo -e "${GREEN}所有监听端口:${NC}"
-    netstat -tlnp | grep LISTEN | head -20
-}
-
-# 显示网络优化状态
-show_network_optimization() {
-    echo -e "${CYAN}=== 网络优化状态 ===${NC}\n"
-    
-    # 检查BBR状态
-    local bbr_status
-    if sysctl net.ipv4.tcp_congestion_control | grep -q bbr; then
-        bbr_status="${GREEN}已启用${NC}"
-    else
-        bbr_status="${RED}未启用${NC}"
-    fi
-    echo -e "BBR拥塞控制: $bbr_status"
-    
-    # 检查TCP FastOpen状态
-    local tcp_fastopen
-    tcp_fastopen=$(sysctl net.ipv4.tcp_fastopen | awk '{print $3}')
-    if [[ $tcp_fastopen -eq 3 ]]; then
-        echo -e "TCP FastOpen: ${GREEN}已启用${NC}"
-    else
-        echo -e "TCP FastOpen: ${RED}未启用${NC}"
-    fi
-    
-    echo ""
-    echo -e "${GREEN}当前网络参数:${NC}"
-    sysctl net.ipv4.tcp_congestion_control
-    sysctl net.ipv4.tcp_fastopen
-    sysctl net.core.default_qdisc
-}
-
-# 显示fail2ban状态
-show_fail2ban_status() {
-    echo -e "${CYAN}=== Fail2ban状态 ===${NC}\n"
-    
-    if command -v fail2ban-client >/dev/null 2>&1; then
-        echo -e "${GREEN}Fail2ban运行状态:${NC}"
-        systemctl status fail2ban --no-pager
-        
-        echo -e "\n${GREEN}监狱状态:${NC}"
-        fail2ban-client status
-        
-        if fail2ban-client status | grep -q sing-box; then
-            echo -e "\n${GREEN}Sing-box监狱详情:${NC}"
-            fail2ban-client status sing-box
+    # 处理证书
+    local cert_path key_path
+    if [[ "$USE_DOMAIN" == "true" ]]; then
+        if setup_domain_certificate "$DOMAIN"; then
+            cert_path="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
+            key_path="/etc/letsencrypt/live/$DOMAIN/privkey.pem"
+        else
+            warning "域名证书申请失败，使用自签名证书"
+            generate_self_signed_cert "$DOMAIN"
+            cert_path="$CERT_DIR/fullchain.pem"
+            key_path="$CERT_DIR/privkey.pem"
         fi
     else
-        echo -e "${RED}Fail2ban未安装${NC}"
-    fi
-}
-
-# 显示系统资源
-show_system_resources() {
-    echo -e "${CYAN}=== 系统资源 ===${NC}\n"
-    
-    echo -e "${GREEN}CPU信息:${NC}"
-    grep "model name" /proc/cpuinfo | head -1
-    echo -e "CPU核心数: $(nproc)"
-    
-    echo -e "\n${GREEN}内存信息:${NC}"
-    free -h
-    
-    echo -e "\n${GREEN}磁盘使用:${NC}"
-    df -h /
-    
-    echo -e "\n${GREEN}系统负载:${NC}"
-    uptime
-}
-
-# 显示版本信息
-show_version_info() {
-    echo -e "${CYAN}=== 版本信息 ===${NC}\n"
-    
-    echo -e "${GREEN}脚本版本:${NC} $SCRIPT_VERSION"
-    
-    if command -v sing-box >/dev/null 2>&1; then
-        echo -e "${GREEN}Sing-box版本:${NC} $(sing-box version | head -1)"
-    else
-        echo -e "${RED}Sing-box未安装${NC}"
+        generate_self_signed_cert "localhost"
+        cert_path="$CERT_DIR/fullchain.pem"
+        key_path="$CERT_DIR/privkey.pem"
     fi
     
-    echo -e "${GREEN}操作系统:${NC} $OS"
-    echo -e "${GREEN}系统架构:${NC} $ARCH"
-    echo -e "${GREEN}内核版本:${NC} $(uname -r)"
+    # 添加入站配置
+    jq --arg port "$SELECTED_PORT" \
+       --arg uuid "$GENERATED_UUID" \
+       --arg cert "$cert_path" \
+       --arg key "$key_path" '
+    .inbounds += [{
+      "type": "trojan",
+      "tag": "trojan",
+      "listen": "::",
+      "listen_port": ($port | tonumber),
+      "users": [{
+        "password": $uuid
+      }],
+      "tls": {
+        "enabled": true,
+        "certificate_path": $cert,
+        "key_path": $key
+      },
+      "multiplex": {
+        "enabled": true,
+        "padding": true
+      }
+    }]' "$CONFIG_FILE" > "/tmp/config.json" && mv "/tmp/config.json" "$CONFIG_FILE"
+    
+    success "Trojan 配置完成"
 }
 
-# 安全管理菜单
-security_menu() {
-    while true; do
-        clear
-        echo -e "${CYAN}=== 防火墙与安全 ===${NC}\n"
-        echo -e "  ${GREEN}1.${NC} BBR开关控制"
-        echo -e "  ${GREEN}2.${NC} TCP FastOpen设置"
-        echo -e "  ${GREEN}3.${NC} Fail2ban配置"
-        echo -e "  ${GREEN}4.${NC} IP白名单管理"
-        echo -e "  ${GREEN}5.${NC} IP黑名单管理"
-        echo -e "  ${GREEN}6.${NC} 防火墙状态"
-        echo -e "  ${RED}0.${NC} 返回主菜单"
-        echo ""
-        echo -ne "请选择操作 [0-6]: "
-        
-        local choice
-        read -r choice
-        
-        case $choice in
-            1) toggle_bbr ;;
-            2) toggle_tcp_fastopen ;;
-            3) configure_fail2ban_menu ;;
-            4) manage_ip_whitelist ;;
-            5) manage_ip_blacklist ;;
-            6) show_firewall_status ;;
-            0) break ;;
-            *) 
-                echo -e "${RED}无效选择${NC}"
-                sleep 1
-                ;;
-        esac
-        
-        echo -e "\n按回车键继续..."
-        read -r
-    done
-}
-
-# BBR开关控制
-toggle_bbr() {
-    echo -e "${CYAN}=== BBR控制 ===${NC}\n"
+# 证书管理函数
+setup_domain_certificate() {
+    local domain="$1"
     
-    local current_status
-    if sysctl net.ipv4.tcp_congestion_control | grep -q bbr; then
-        current_status="${GREEN}已启用${NC}"
-        echo -e "当前状态: $current_status"
-        echo ""
-        echo -ne "是否禁用BBR? [y/N]: "
-        read -r confirm
-        
-        if [[ $confirm =~ ^[Yy]$ ]]; then
-            sed -i '/net.ipv4.tcp_congestion_control = bbr/d' /etc/sysctl.conf
-            sed -i '/net.core.default_qdisc = fq/d' /etc/sysctl.conf
-            sysctl -p >/dev/null 2>&1
-            success "BBR已禁用"
-        fi
-    else
-        current_status="${RED}未启用${NC}"
-        echo -e "当前状态: $current_status"
-        echo ""
-        echo -ne "是否启用BBR? [y/N]: "
-        read -r confirm
-        
-        if [[ $confirm =~ ^[Yy]$ ]]; then
-            enable_bbr
-        fi
-    fi
-}
-
-# TCP FastOpen开关控制
-toggle_tcp_fastopen() {
-    echo -e "${CYAN}=== TCP FastOpen控制 ===${NC}\n"
+    info "为域名 $domain 申请 Let's Encrypt 证书..."
     
-    local current_value
-    current_value=$(sysctl net.ipv4.tcp_fastopen | awk '{print $3}')
-    
-    if [[ $current_value -eq 3 ]]; then
-        echo -e "当前状态: ${GREEN}已启用${NC}"
-        echo ""
-        echo -ne "是否禁用TCP FastOpen? [y/N]: "
-        read -r confirm
-        
-        if [[ $confirm =~ ^[Yy]$ ]]; then
-            sysctl -w net.ipv4.tcp_fastopen=0
-            sed -i '/net.ipv4.tcp_fastopen = 3/d' /etc/sysctl.conf
-            success "TCP FastOpen已禁用"
-        fi
-    else
-        echo -e "当前状态: ${RED}未启用${NC}"
-        echo ""
-        echo -ne "是否启用TCP FastOpen? [y/N]: "
-        read -r confirm
-        
-        if [[ $confirm =~ ^[Yy]$ ]]; then
-            sysctl -w net.ipv4.tcp_fastopen=3
-            if ! grep -q "net.ipv4.tcp_fastopen = 3" /etc/sysctl.conf; then
-                echo 'net.ipv4.tcp_fastopen = 3' >> /etc/sysctl.conf
-            fi
-            success "TCP FastOpen已启用"
-        fi
-    fi
-}
-
-# Fail2ban配置菜单
-configure_fail2ban_menu() {
-    echo -e "${CYAN}=== Fail2ban配置 ===${NC}\n"
-    echo -e "  ${GREEN}1.${NC} 查看封禁列表"
-    echo -e "  ${GREEN}2.${NC} 解封IP地址"
-    echo -e "  ${GREEN}3.${NC} 重启Fail2ban"
-    echo -e "  ${GREEN}4.${NC} 查看日志"
-    echo ""
-    echo -ne "请选择操作 [1-4]: "
-    
-    local choice
-    read -r choice
-    
-    case $choice in
-        1) 
-            if command -v fail2ban-client >/dev/null 2>&1; then
-                fail2ban-client status sing-box
-            else
-                echo -e "${RED}Fail2ban未安装${NC}"
-            fi
-            ;;
-        2) 
-            echo -ne "请输入要解封的IP地址: "
-            read -r ip_address
-            if [[ -n $ip_address ]]; then
-                fail2ban-client set sing-box unbanip "$ip_address"
-                success "IP地址 $ip_address 已解封"
-            fi
-            ;;
-        3) 
-            systemctl restart fail2ban
-            success "Fail2ban已重启"
-            ;;
-        4) 
-            tail -50 /var/log/fail2ban.log
-            ;;
-    esac
-}
-
-# IP白名单管理
-manage_ip_whitelist() {
-    echo -e "${CYAN}=== IP白名单管理 ===${NC}\n"
-    
-    local whitelist_file="/etc/sing-box/whitelist.txt"
-    
-    echo -e "  ${GREEN}1.${NC} 查看白名单"
-    echo -e "  ${GREEN}2.${NC} 添加IP到白名单"
-    echo -e "  ${GREEN}3.${NC} 从白名单删除IP"
-    echo ""
-    echo -ne "请选择操作 [1-3]: "
-    
-    local choice
-    read -r choice
-    
-    case $choice in
-        1) 
-            if [[ -f $whitelist_file ]]; then
-                cat "$whitelist_file"
-            else
-                echo "白名单为空"
-            fi
-            ;;
-        2) 
-            echo -ne "请输入要添加的IP地址: "
-            read -r ip_address
-            if [[ -n $ip_address ]]; then
-                echo "$ip_address" >> "$whitelist_file"
-                # 添加防火墙规则
-                iptables -I INPUT -s "$ip_address" -j ACCEPT
-                success "IP地址 $ip_address 已添加到白名单"
-            fi
-            ;;
-        3) 
-            echo -ne "请输入要删除的IP地址: "
-            read -r ip_address
-            if [[ -n $ip_address ]]; then
-                sed -i "/$ip_address/d" "$whitelist_file" 2>/dev/null
-                # 删除防火墙规则
-                iptables -D INPUT -s "$ip_address" -j ACCEPT 2>/dev/null
-                success "IP地址 $ip_address 已从白名单删除"
-            fi
-            ;;
-    esac
-}
-
-# IP黑名单管理
-manage_ip_blacklist() {
-    echo -e "${CYAN}=== IP黑名单管理 ===${NC}\n"
-    
-    local blacklist_file="/etc/sing-box/blacklist.txt"
-    
-    echo -e "  ${GREEN}1.${NC} 查看黑名单"
-    echo -e "  ${GREEN}2.${NC} 添加IP到黑名单"
-    echo -e "  ${GREEN}3.${NC} 从黑名单删除IP"
-    echo ""
-    echo -ne "请选择操作 [1-3]: "
-    
-    local choice
-    read -r choice
-    
-    case $choice in
-        1) 
-            if [[ -f $blacklist_file ]]; then
-                cat "$blacklist_file"
-            else
-                echo "黑名单为空"
-            fi
-            ;;
-        2) 
-            echo -ne "请输入要添加的IP地址: "
-            read -r ip_address
-            if [[ -n $ip_address ]]; then
-                echo "$ip_address" >> "$blacklist_file"
-                # 添加防火墙规则
-                iptables -I INPUT -s "$ip_address" -j DROP
-                success "IP地址 $ip_address 已添加到黑名单"
-            fi
-            ;;
-        3) 
-            echo -ne "请输入要删除的IP地址: "
-            read -r ip_address
-            if [[ -n $ip_address ]]; then
-                sed -i "/$ip_address/d" "$blacklist_file" 2>/dev/null
-                # 删除防火墙规则
-                iptables -D INPUT -s "$ip_address" -j DROP 2>/dev/null
-                success "IP地址 $ip_address 已从黑名单删除"
-            fi
-            ;;
-    esac
-}
-
-# 显示防火墙状态
-show_firewall_status() {
-    echo -e "${CYAN}=== 防火墙状态 ===${NC}\n"
-    
-    if command -v ufw >/dev/null 2>&1; then
-        echo -e "${GREEN}UFW状态:${NC}"
-        ufw status verbose
-    elif command -v firewall-cmd >/dev/null 2>&1; then
-        echo -e "${GREEN}Firewalld状态:${NC}"
-        firewall-cmd --list-all
-    else
-        echo -e "${GREEN}iptables规则:${NC}"
-        iptables -L -n --line-numbers
-    fi
-}
-
-# 证书管理菜单
-certificate_menu() {
-    while true; do
-        clear
-        echo -e "${CYAN}=== 证书管理 ===${NC}\n"
-        echo -e "  ${GREEN}1.${NC} 申请Let's Encrypt证书"
-        echo -e "  ${GREEN}2.${NC} 续期证书"
-        echo -e "  ${GREEN}3.${NC} 生成自签证书"
-        echo -e "  ${GREEN}4.${NC} 查看证书状态"
-        echo -e "  ${GREEN}5.${NC} 导入自有证书"
-        echo -e "  ${RED}0.${NC} 返回主菜单"
-        echo ""
-        echo -ne "请选择操作 [0-5]: "
-        
-        local choice
-        read -r choice
-        
-        case $choice in
-            1) apply_letsencrypt_certificate ;;
-            2) renew_certificate ;;
-            3) generate_self_signed_certificate ;;
-            4) show_certificate_status ;;
-            5) import_certificate ;;
-            0) break ;;
-            *) 
-                echo -e "${RED}无效选择${NC}"
-                sleep 1
-                ;;
-        esac
-        
-        echo -e "\n按回车键继续..."
-        read -r
-    done
-}
-
-# 申请Let's Encrypt证书
-apply_letsencrypt_certificate() {
-    echo -e "${CYAN}=== 申请Let's Encrypt证书 ===${NC}\n"
-    
-    echo -ne "请输入域名: "
-    read -r domain
-    
-    if [[ -z $domain ]]; then
-        echo -e "${RED}域名不能为空${NC}"
-        return
-    fi
-    
-    echo -ne "请输入邮箱地址: "
-    read -r email
-    
-    if [[ -z $email ]]; then
-        echo -e "${RED}邮箱地址不能为空${NC}"
-        return
-    fi
-    
-    log "INFO" "开始申请证书..."
-    
-    # 安装acme.sh
-    if [[ ! -f ~/.acme.sh/acme.sh ]]; then
-        curl https://get.acme.sh | sh -s email="$email"
-        source ~/.bashrc
-    fi
+    # 停止可能占用80端口的服务
+    systemctl stop nginx apache2 2>/dev/null || true
     
     # 申请证书
-    ~/.acme.sh/acme.sh --issue -d "$domain" --standalone
-    
-    if [[ $? -eq 0 ]]; then
-        # 安装证书
-        local cert_dir="/etc/sing-box/certs"
-        mkdir -p "$cert_dir"
-        
-        ~/.acme.sh/acme.sh --install-cert -d "$domain" \
-            --key-file "$cert_dir/private.key" \
-            --fullchain-file "$cert_dir/cert.crt"
-        
+    if certbot certonly --standalone --non-interactive --agree-tos --email "admin@$domain" -d "$domain" >/dev/null 2>&1; then
         success "证书申请成功"
         
-        # 保存证书信息
-        echo "$domain:$email:$(date '+%Y-%m-%d')" >> "$CONFIG_DIR/certificates.txt"
+        # 设置自动续期
+        echo "0 2 * * * root certbot renew --quiet && systemctl reload sing-box" > /etc/cron.d/certbot-renew
+        return 0
     else
-        error_exit "证书申请失败"
+        error "证书申请失败"
+        return 1
     fi
 }
 
-# 续期证书
-renew_certificate() {
-    echo -e "${CYAN}=== 续期证书 ===${NC}\n"
+# 生成自签名证书
+generate_self_signed_cert() {
+    local domain="$1"
     
-    if [[ -f ~/.acme.sh/acme.sh ]]; then
-        ~/.acme.sh/acme.sh --cron
-        success "证书续期完成"
+    info "生成自签名证书..."
+    
+    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+        -keyout "$CERT_DIR/privkey.pem" \
+        -out "$CERT_DIR/fullchain.pem" \
+        -subj "/C=US/ST=State/L=City/O=Organization/CN=$domain" >/dev/null 2>&1
+    
+    if [[ $? -eq 0 ]]; then
+        success "自签名证书生成完成"
+        return 0
     else
-        echo -e "${RED}acme.sh未安装${NC}"
+        error "自签名证书生成失败"
+        return 1
     fi
 }
 
-# 生成自签证书
-generate_self_signed_certificate() {
-    echo -e "${CYAN}=== 生成自签证书 ===${NC}\n"
+# 显示客户端配置信息
+show_client_info() {
+    echo
+    echo -e "${CYAN}======================================${NC}"
+    echo -e "${WHITE}           客户端配置信息${NC}"
+    echo -e "${CYAN}======================================${NC}"
+    echo
     
-    echo -ne "请输入域名 (默认: localhost): "
-    read -r domain
-    domain=${domain:-localhost}
+    case "$SELECTED_PROTOCOL" in
+        "vless-reality")
+            show_vless_reality_info
+            ;;
+        "hysteria2")
+            show_hysteria2_info
+            ;;
+        "tuic")
+            show_tuic_info
+            ;;
+        "shadowtls")
+            show_shadowtls_info
+            ;;
+        "shadowsocks")
+            show_shadowsocks_info
+            ;;
+        "trojan")
+            show_trojan_info
+            ;;
+    esac
     
-    local cert_dir="/etc/sing-box/certs"
-    mkdir -p "$cert_dir"
-    
-    # 生成私钥
-    openssl genrsa -out "$cert_dir/private.key" 2048
-    
-    # 生成证书请求
-    openssl req -new -key "$cert_dir/private.key" -out "$cert_dir/cert.csr" -subj "/CN=$domain"
-    
-    # 生成自签证书
-    openssl x509 -req -days 365 -in "$cert_dir/cert.csr" -signkey "$cert_dir/private.key" -out "$cert_dir/cert.crt"
-    
-    # 清理临时文件
-    rm -f "$cert_dir/cert.csr"
-    
-    success "自签证书生成完成"
+    echo
+    echo -e "${CYAN}======================================${NC}"
+    echo -e "${WHITE}           订阅链接${NC}"
+    echo -e "${CYAN}======================================${NC}"
+    echo
+    echo -e "${GREEN}Clash:${NC} http://$SERVER_IP:8080/clash"
+    echo -e "${GREEN}V2rayN:${NC} http://$SERVER_IP:8080/v2ray"
+    echo -e "${GREEN}Sing-box:${NC} http://$SERVER_IP:8080/singbox"
+    echo
 }
 
-# 查看证书状态
-show_certificate_status() {
-    echo -e "${CYAN}=== 证书状态 ===${NC}\n"
+# 显示VLESS-Reality信息
+show_vless_reality_info() {
+    local public_key
+    local short_id
     
-    local cert_dir="/etc/sing-box/certs"
+    if [[ -f "$WORK_DIR/reality_public_key" ]]; then
+        public_key=$(cat "$WORK_DIR/reality_public_key")
+    fi
     
-    if [[ -f "$cert_dir/cert.crt" ]]; then
-        echo -e "${GREEN}证书信息:${NC}"
-        openssl x509 -in "$cert_dir/cert.crt" -text -noout | grep -E "(Subject|Not After)"
+    if [[ -f "$WORK_DIR/reality_short_id" ]]; then
+        short_id=$(cat "$WORK_DIR/reality_short_id")
+    fi
+    
+    echo -e "${GREEN}协议:${NC} VLESS + Reality"
+    echo -e "${GREEN}地址:${NC} $SERVER_IP"
+    echo -e "${GREEN}端口:${NC} $SELECTED_PORT"
+    echo -e "${GREEN}UUID:${NC} $GENERATED_UUID"
+    echo -e "${GREEN}流控:${NC} xtls-rprx-vision"
+    echo -e "${GREEN}传输:${NC} TCP"
+    echo -e "${GREEN}TLS:${NC} Reality"
+    echo -e "${GREEN}SNI:${NC} www.microsoft.com"
+    echo -e "${GREEN}Fingerprint:${NC} chrome"
+    echo -e "${GREEN}PublicKey:${NC} $public_key"
+    echo -e "${GREEN}ShortId:${NC} $short_id"
+}
+
+# 显示Hysteria2信息
+show_hysteria2_info() {
+    echo -e "${GREEN}协议:${NC} Hysteria2"
+    echo -e "${GREEN}地址:${NC} $SERVER_IP"
+    echo -e "${GREEN}端口:${NC} $SELECTED_PORT"
+    echo -e "${GREEN}密码:${NC} $GENERATED_UUID"
+    echo -e "${GREEN}TLS:${NC} 启用"
+    if [[ "$USE_DOMAIN" == "true" ]]; then
+        echo -e "${GREEN}SNI:${NC} $DOMAIN"
     else
-        echo -e "${RED}未找到证书文件${NC}"
+        echo -e "${GREEN}SNI:${NC} localhost"
     fi
-    
-    if [[ -f "$CONFIG_DIR/certificates.txt" ]]; then
-        echo -e "\n${GREEN}管理的证书:${NC}"
-        cat "$CONFIG_DIR/certificates.txt"
+    echo -e "${GREEN}ALPN:${NC} h3"
+    echo -e "${GREEN}伪装:${NC} https://www.bing.com"
+}
+
+# 显示Shadowsocks信息
+show_shadowsocks_info() {
+    echo -e "${GREEN}协议:${NC} Shadowsocks"
+    echo -e "${GREEN}地址:${NC} $SERVER_IP"
+    echo -e "${GREEN}端口:${NC} $SELECTED_PORT"
+    echo -e "${GREEN}密码:${NC} $GENERATED_UUID"
+    echo -e "${GREEN}加密:${NC} chacha20-ietf-poly1305"
+    echo -e "${GREEN}多路复用:${NC} 启用"
+}
+
+# 显示TUIC信息
+show_tuic_info() {
+    echo -e "${GREEN}协议:${NC} TUIC"
+    echo -e "${GREEN}地址:${NC} $SERVER_IP"
+    echo -e "${GREEN}端口:${NC} $SELECTED_PORT"
+    echo -e "${GREEN}UUID:${NC} $GENERATED_UUID"
+    echo -e "${GREEN}密码:${NC} $GENERATED_UUID"
+    echo -e "${GREEN}拥塞控制:${NC} BBR"
+    echo -e "${GREEN}ALPN:${NC} h3"
+    if [[ "$USE_DOMAIN" == "true" ]]; then
+        echo -e "${GREEN}SNI:${NC} $DOMAIN"
+    else
+        echo -e "${GREEN}SNI:${NC} localhost"
     fi
 }
 
-# 导入自有证书
-import_certificate() {
-    echo -e "${CYAN}=== 导入自有证书 ===${NC}\n"
-    
-    echo -ne "请输入证书文件路径 (.crt): "
-    read -r cert_file
-    
-    echo -ne "请输入私钥文件路径 (.key): "
-    read -r key_file
-    
-    if [[ ! -f $cert_file ]] || [[ ! -f $key_file ]]; then
-        echo -e "${RED}证书或私钥文件不存在${NC}"
-        return
-    fi
-    
-    local cert_dir="/etc/sing-box/certs"
-    mkdir -p "$cert_dir"
-    
-    cp "$cert_file" "$cert_dir/cert.crt"
-    cp "$key_file" "$cert_dir/private.key"
-    
-    success "证书导入完成"
+# 显示ShadowTLS信息
+show_shadowtls_info() {
+    echo -e "${GREEN}协议:${NC} ShadowTLS"
+    echo -e "${GREEN}地址:${NC} $SERVER_IP"
+    echo -e "${GREEN}端口:${NC} $SELECTED_PORT"
+    echo -e "${GREEN}密码:${NC} $GENERATED_UUID"
+    echo -e "${GREEN}版本:${NC} 3"
+    echo -e "${GREEN}握手服务器:${NC} www.microsoft.com"
+    echo -e "${GREEN}内层加密:${NC} chacha20-ietf-poly1305"
+    echo -e "${GREEN}严格模式:${NC} 启用"
 }
 
-# 高级设置菜单
-advanced_menu() {
+# 显示Trojan信息
+show_trojan_info() {
+    echo -e "${GREEN}协议:${NC} Trojan"
+    echo -e "${GREEN}地址:${NC} $SERVER_IP"
+    echo -e "${GREEN}端口:${NC} $SELECTED_PORT"
+    echo -e "${GREEN}密码:${NC} $GENERATED_UUID"
+    echo -e "${GREEN}TLS:${NC} 启用"
+    if [[ "$USE_DOMAIN" == "true" ]]; then
+        echo -e "${GREEN}SNI:${NC} $DOMAIN"
+    else
+        echo -e "${GREEN}SNI:${NC} localhost"
+    fi
+    echo -e "${GREEN}多路复用:${NC} 启用"
+}
+
+# 管理菜单
+management_menu() {
     while true; do
         clear
-        echo -e "${CYAN}=== 高级设置 ===${NC}\n"
-        echo -e "  ${GREEN}1.${NC} CDN配置"
-        echo -e "  ${GREEN}2.${NC} 伪装站点设置"
-        echo -e "  ${GREEN}3.${NC} TLS指纹配置"
-        echo -e "  ${GREEN}4.${NC} 多入口配置"
-        echo -e "  ${GREEN}5.${NC} 性能调优"
-        echo -e "  ${GREEN}6.${NC} 备份配置"
-        echo -e "  ${GREEN}7.${NC} 恢复配置"
-        echo -e "  ${RED}0.${NC} 返回主菜单"
-        echo ""
-        echo -ne "请选择操作 [0-7]: "
+        echo -e "${CYAN}======================================${NC}"
+        echo -e "${WHITE}           SBall 管理菜单${NC}"
+        echo -e "${CYAN}======================================${NC}"
+        echo
+        
+        echo -e "${GREEN}1.${NC} 重新配置协议"
+        echo -e "${BLUE}2.${NC} 重启服务"
+        echo -e "${BLUE}3.${NC} 停止服务"
+        echo -e "${BLUE}4.${NC} 启动服务"
+        echo -e "${YELLOW}5.${NC} 更换端口"
+        echo -e "${YELLOW}6.${NC} 更新证书"
+        echo -e "${PURPLE}7.${NC} 备份配置"
+        echo -e "${PURPLE}8.${NC} 恢复配置"
+        echo -e "${RED}9.${NC} 重置配置"
+        echo -e "${RED}0.${NC} 返回主菜单"
+        echo
+        echo -e "${CYAN}======================================${NC}"
         
         local choice
-        read -r choice
+        reading "请选择操作" choice
         
-        case $choice in
-            1) configure_cdn ;;
-            2) configure_camouflage ;;
-            3) configure_tls_fingerprint ;;
-            4) configure_multi_entrance ;;
-            5) performance_tuning ;;
-            6) backup_configuration ;;
-            7) restore_configuration ;;
-            0) break ;;
-            *) 
-                echo -e "${RED}无效选择${NC}"
+        case "$choice" in
+            1)
+                reconfigure_protocol
+                pause
+                ;;
+            2)
+                restart_service
+                pause
+                ;;
+            3)
+                stop_service
+                pause
+                ;;
+            4)
+                start_service
+                pause
+                ;;
+            5)
+                change_port
+                pause
+                ;;
+            6)
+                update_certificate
+                pause
+                ;;
+            7)
+                backup_config
+                pause
+                ;;
+            8)
+                restore_config
+                pause
+                ;;
+            9)
+                reset_config
+                pause
+                ;;
+            0)
+                return
+                ;;
+            *)
+                warning "无效选项，请重新选择"
                 sleep 1
                 ;;
         esac
-        
-        echo -e "\n按回车键继续..."
-        read -r
     done
 }
 
-# CDN配置
-configure_cdn() {
-    echo -e "${CYAN}=== CDN配置 ===${NC}\n"
-    echo -e "  ${GREEN}1.${NC} Cloudflare CDN"
-    echo -e "  ${GREEN}2.${NC} AWS CloudFront"
-    echo -e "  ${GREEN}3.${NC} 自定义CDN"
-    echo ""
-    echo -ne "请选择CDN类型 [1-3]: "
+# 重新配置协议
+reconfigure_protocol() {
+    info "开始重新配置协议..."
     
-    local choice
-    read -r choice
+    # 停止服务
+    systemctl stop sing-box
     
-    case $choice in
-        1) configure_cloudflare_cdn ;;
-        2) configure_aws_cdn ;;
-        3) configure_custom_cdn ;;
-    esac
-}
-
-# 配置Cloudflare CDN
-configure_cloudflare_cdn() {
-    echo -e "${CYAN}=== Cloudflare CDN配置 ===${NC}\n"
+    # 交互式配置
+    interactive_config
     
-    echo -ne "请输入Cloudflare域名: "
-    read -r cf_domain
-    
-    echo -ne "请输入原始服务器IP: "
-    read -r origin_ip
-    
-    if [[ -n $cf_domain && -n $origin_ip ]]; then
-        # 这里可以添加Cloudflare CDN的具体配置逻辑
-        echo "Domain: $cf_domain" >> "$CONFIG_DIR/cdn.conf"
-        echo "Origin: $origin_ip" >> "$CONFIG_DIR/cdn.conf"
-        success "Cloudflare CDN配置完成"
+    # 生成新配置
+    if generate_config; then
+        # 重启服务
+        systemctl start sing-box
+        
+        if systemctl is-active --quiet sing-box; then
+            success "协议重新配置成功"
+            echo
+            show_client_info
+        else
+            error "服务启动失败"
+            systemctl status sing-box
+        fi
+    else
+        error "配置生成失败"
     fi
 }
 
-# 配置AWS CloudFront
-configure_aws_cdn() {
-    echo -e "${CYAN}=== AWS CloudFront配置 ===${NC}\n"
-    echo -e "${YELLOW}AWS CloudFront配置功能开发中...${NC}"
-}
-
-# 配置自定义CDN
-configure_custom_cdn() {
-    echo -e "${CYAN}=== 自定义CDN配置 ===${NC}\n"
-    echo -e "${YELLOW}自定义CDN配置功能开发中...${NC}"
-}
-
-# 伪装站点设置
-configure_camouflage() {
-    echo -e "${CYAN}=== 伪装站点设置 ===${NC}\n"
+# 重启服务
+restart_service() {
+    info "重启 Sing-box 服务..."
+    systemctl restart sing-box
     
-    echo -ne "请输入伪装网站URL: "
-    read -r camouflage_url
-    
-    if [[ -n $camouflage_url ]]; then
-        echo "camouflage_url=$camouflage_url" >> "$CONFIG_DIR/camouflage.conf"
-        success "伪装站点设置完成"
+    if systemctl is-active --quiet sing-box; then
+        success "服务重启成功"
+    else
+        error "服务重启失败"
+        systemctl status sing-box
     fi
 }
 
-# TLS指纹配置
-configure_tls_fingerprint() {
-    echo -e "${CYAN}=== TLS指纹配置 ===${NC}\n"
+# 停止服务
+stop_service() {
+    info "停止 Sing-box 服务..."
+    systemctl stop sing-box
     
-    echo -e "选择TLS指纹类型:"
-    echo -e "  ${GREEN}1.${NC} Chrome"
-    echo -e "  ${GREEN}2.${NC} Firefox"
-    echo -e "  ${GREEN}3.${NC} Safari"
-    echo -e "  ${GREEN}4.${NC} Edge"
-    echo ""
-    echo -ne "请选择 [1-4]: "
-    
-    local choice
-    read -r choice
-    
-    local fingerprint
-    case $choice in
-        1) fingerprint="chrome" ;;
-        2) fingerprint="firefox" ;;
-        3) fingerprint="safari" ;;
-        4) fingerprint="edge" ;;
-        *) fingerprint="chrome" ;;
-    esac
-    
-    echo "tls_fingerprint=$fingerprint" >> "$CONFIG_DIR/tls.conf"
-    success "TLS指纹配置完成: $fingerprint"
+    if ! systemctl is-active --quiet sing-box; then
+        success "服务已停止"
+    else
+        error "服务停止失败"
+    fi
 }
 
-# 多入口配置
-configure_multi_entrance() {
-    echo -e "${CYAN}=== 多入口配置 ===${NC}\n"
-    echo -e "${YELLOW}多入口配置功能开发中...${NC}"
+# 启动服务
+start_service() {
+    info "启动 Sing-box 服务..."
+    systemctl start sing-box
+    
+    if systemctl is-active --quiet sing-box; then
+        success "服务启动成功"
+    else
+        error "服务启动失败"
+        systemctl status sing-box
+    fi
 }
 
-# 性能调优
-performance_tuning() {
-    echo -e "${CYAN}=== 性能调优 ===${NC}\n"
+# 更换端口
+change_port() {
+    info "更换服务端口..."
     
-    log "INFO" "应用性能优化设置..."
+    # 配置新端口
+    config_port
     
-    # 高级网络参数优化
-    cat >> /etc/sysctl.conf << 'EOF'
+    # 更新配置文件中的端口
+    if [[ -f "$CONFIG_FILE" ]]; then
+        jq --arg port "$SELECTED_PORT" '
+        .inbounds[0].listen_port = ($port | tonumber)' "$CONFIG_FILE" > "/tmp/config.json" && mv "/tmp/config.json" "$CONFIG_FILE"
+        
+        # 重启服务
+        systemctl restart sing-box
+        
+        if systemctl is-active --quiet sing-box; then
+            success "端口更换成功，新端口: $SELECTED_PORT"
+        else
+            error "服务重启失败"
+        fi
+    else
+        error "配置文件不存在"
+    fi
+}
 
-# Advanced network optimization
-net.ipv4.tcp_window_scaling = 1
-net.ipv4.tcp_timestamps = 1
-net.ipv4.tcp_sack = 1
-net.ipv4.tcp_no_metrics_save = 1
-net.ipv4.tcp_moderate_rcvbuf = 1
-net.ipv4.tcp_congestion_control = bbr
-net.core.rmem_default = 262144
-net.core.rmem_max = 16777216
-net.core.wmem_default = 262144
-net.core.wmem_max = 16777216
-net.ipv4.tcp_rmem = 4096 65536 16777216
-net.ipv4.tcp_wmem = 4096 65536 16777216
-EOF
+# 更新证书
+update_certificate() {
+    info "更新证书..."
     
-    sysctl -p >/dev/null 2>&1
-    
-    success "性能调优完成"
+    if [[ "$USE_DOMAIN" == "true" && -n "$DOMAIN" ]]; then
+        if setup_domain_certificate "$DOMAIN"; then
+            systemctl restart sing-box
+            success "证书更新成功"
+        else
+            error "证书更新失败"
+        fi
+    else
+        warning "当前使用自签名证书，无需更新"
+    fi
 }
 
 # 备份配置
-backup_configuration() {
-    echo -e "${CYAN}=== 备份配置 ===${NC}\n"
+backup_config() {
+    info "备份配置文件..."
     
-    local backup_dir="/root/sing-box-backup"
-    local backup_file="$backup_dir/backup-$(date +%Y%m%d-%H%M%S).tar.gz"
+    local backup_dir="/root/sball_backup"
+    local backup_file="$backup_dir/config_$(date +%Y%m%d_%H%M%S).tar.gz"
     
     mkdir -p "$backup_dir"
     
-    tar -czf "$backup_file" -C / etc/sing-box var/log/sing-box 2>/dev/null
-    
-    if [[ -f $backup_file ]]; then
-        success "配置备份完成: $backup_file"
+    if tar -czf "$backup_file" -C "/" "etc/sing-box" 2>/dev/null; then
+        success "配置备份成功: $backup_file"
     else
-        echo -e "${RED}备份失败${NC}"
+        error "配置备份失败"
     fi
 }
 
 # 恢复配置
-restore_configuration() {
-    echo -e "${CYAN}=== 恢复配置 ===${NC}\n"
+restore_config() {
+    info "恢复配置文件..."
     
-    local backup_dir="/root/sing-box-backup"
+    local backup_dir="/root/sball_backup"
     
-    if [[ ! -d $backup_dir ]]; then
-        echo -e "${RED}备份目录不存在${NC}"
-        return
+    if [[ ! -d "$backup_dir" ]]; then
+        error "备份目录不存在"
+        return 1
     fi
     
-    echo -e "${GREEN}可用的备份文件:${NC}"
+    echo "可用的备份文件:"
     ls -la "$backup_dir"/*.tar.gz 2>/dev/null | nl
     
-    echo ""
-    echo -ne "请输入备份文件完整路径: "
-    read -r backup_file
+    local backup_file
+    reading "请输入备份文件完整路径" backup_file
     
-    if [[ -f $backup_file ]]; then
-        echo -e "${RED}警告: 此操作将覆盖当前配置！${NC}"
-        echo -ne "确认恢复? [y/N]: "
-        read -r confirm
+    if [[ -f "$backup_file" ]]; then
+        systemctl stop sing-box
         
-        if [[ $confirm =~ ^[Yy]$ ]]; then
-            systemctl stop sing-box
-            tar -xzf "$backup_file" -C /
+        if tar -xzf "$backup_file" -C "/" 2>/dev/null; then
             systemctl start sing-box
-            success "配置恢复完成"
+            success "配置恢复成功"
+        else
+            error "配置恢复失败"
         fi
     else
-        echo -e "${RED}备份文件不存在${NC}"
+        error "备份文件不存在"
     fi
 }
 
-# =============================================================================
-# 主程序入口
-# =============================================================================
+# 重置配置
+reset_config() {
+    if confirm "确定要重置所有配置吗？这将删除当前配置并重新安装"; then
+        info "重置配置..."
+        
+        # 停止服务
+        systemctl stop sing-box
+        
+        # 删除配置文件
+        rm -rf "$WORK_DIR"
+        
+        # 重新安装
+        quick_install
+    fi
+}
 
-# 主循环
-main() {
-    # 检查root权限
-    check_root
-    
-    # 检查网络连接
-    check_network
-    
-    # 处理命令行参数
-    case "${1:-}" in
-        "install")
-            install_menu
-            exit 0
-            ;;
-        "uninstall")
-            uninstall_menu
-            exit 0
-            ;;
-        "update")
-            install_menu
-            exit 0
-            ;;
-        "--help"|"-h")
-            show_help
-            exit 0
-            ;;
-        "--version"|"-v")
-            echo "SBall v$SCRIPT_VERSION"
-            exit 0
-            ;;
-    esac
-    
-    # 主菜单循环
+# 查看节点信息
+view_node_info() {
+    if [[ -f "$CONFIG_FILE" ]]; then
+        show_client_info
+    else
+        error "配置文件不存在"
+    fi
+}
+
+# 查看日志
+view_logs() {
+    if [[ -f "$LOG_FILE" ]]; then
+        echo "最近50行日志:"
+        echo
+        tail -n 50 "$LOG_FILE"
+    else
+        warning "日志文件不存在"
+    fi
+}
+
+# 检查服务状态
+check_service_status() {
+    echo "Sing-box 服务状态:"
+    echo
+    systemctl status sing-box --no-pager
+}
+
+# 检查证书信息
+check_certificate_info() {
+    echo "证书信息功能开发中..."
+}
+
+# 更新Sing-box
+update_singbox() {
+    echo "更新功能开发中..."
+}
+
+# 卸载Sing-box
+uninstall_singbox() {
+    if confirm "确定要卸载 SBall 吗？这将删除所有配置文件"; then
+        info "开始卸载..."
+        
+        # 停止服务
+        systemctl stop sing-box 2>/dev/null
+        systemctl disable sing-box 2>/dev/null
+        
+        # 删除文件
+        rm -f "/usr/local/bin/sing-box"
+        rm -f "$SERVICE_FILE"
+        rm -rf "$WORK_DIR"
+        rm -f "$LOG_FILE"
+        
+        # 重新加载systemd
+        systemctl daemon-reload
+        
+        success "卸载完成"
+        INSTALLED=false
+    fi
+}
+
+# 语言设置（已移除多语言支持）
+switch_language() {
+    info "当前版本仅支持中文"
+    sleep 1
+}
+
+# 安全防护
+security_protection() {
     while true; do
-        show_main_menu
-        handle_main_menu
+        clear
+        echo -e "${CYAN}======================================${NC}"
+        echo -e "${WHITE}           安全防护设置${NC}"
+        echo -e "${CYAN}======================================${NC}"
+        echo
+        
+        echo -e "${GREEN}1.${NC} 安装 Fail2ban 防护"
+        echo -e "${BLUE}2.${NC} 配置 SSH 安全"
+        echo -e "${YELLOW}3.${NC} 设置防火墙规则"
+        echo -e "${PURPLE}4.${NC} 查看安全状态"
+        echo -e "${RED}0.${NC} 返回主菜单"
+        echo
+        echo -e "${CYAN}======================================${NC}"
+        
+        local choice
+        reading "请选择操作" choice
+        
+        case "$choice" in
+            1)
+                install_fail2ban
+                pause
+                ;;
+            2)
+                configure_ssh_security
+                pause
+                ;;
+            3)
+                configure_firewall
+                pause
+                ;;
+            4)
+                check_security_status
+                pause
+                ;;
+            0)
+                return
+                ;;
+            *)
+                warning "无效选项，请重新选择"
+                sleep 1
+                ;;
+        esac
     done
 }
 
-# 显示帮助信息
-show_help() {
-    echo -e "${CYAN}SBall - Sing-box 全能安装脚本 v$SCRIPT_VERSION${NC}\n"
-    echo "用法: $0 [选项]"
-    echo ""
-    echo "选项:"
-    echo "  install     一键安装Sing-box"
-    echo "  uninstall   卸载Sing-box"
-    echo "  update      更新Sing-box"
-    echo "  -h, --help  显示帮助信息"
-    echo "  -v, --version 显示版本信息"
-    echo ""
-    echo "示例:"
-    echo "  $0 install                    # 交互式安装"
-    echo "  $0 install --silent          # 静默安装"
-    echo "  $0 uninstall                 # 卸载"
-    echo ""
+# 安装Fail2ban
+install_fail2ban() {
+    info "安装 Fail2ban..."
+    
+    if command -v fail2ban-server >/dev/null 2>&1; then
+        success "Fail2ban 已安装"
+        return 0
+    fi
+    
+    apt update -qq
+    apt install -y fail2ban >/dev/null 2>&1
+    
+    if [[ $? -eq 0 ]]; then
+        success "Fail2ban 安装成功"
+        configure_fail2ban
+    else
+        error "Fail2ban 安装失败"
+        return 1
+    fi
 }
 
-# 显示脚本开始信息
-show_banner() {
-    clear
-    echo -e "${CYAN}"
-    echo "  ____  ____        _ _ "
-    echo " / ___|| __ )  __ _| | |"
-    echo " \___ \|  _ \ / _\` | | |"
-    echo "  ___) | |_) | (_| | | |"
-    echo " |____/|____/ \__,_|_|_|"
-    echo -e "${NC}"
-    echo -e "${GREEN}Sing-box 全能安装脚本 v$SCRIPT_VERSION${NC}"
-    echo -e "${YELLOW}作者: SBall Development Team${NC}"
-    echo -e "${BLUE}项目: https://github.com/$GITHUB_REPO${NC}"
-    echo ""
+# 配置Fail2ban
+configure_fail2ban() {
+    info "配置 Fail2ban..."
+    
+    # 创建jail.local配置文件
+    cat > "/etc/fail2ban/jail.local" << EOF
+[DEFAULT]
+bantime = 3600
+findtime = 600
+maxretry = 3
+backend = systemd
+
+[sshd]
+enabled = true
+port = ssh
+filter = sshd
+logpath = /var/log/auth.log
+maxretry = 3
+bantime = 3600
+
+[sing-box]
+enabled = true
+port = $SELECTED_PORT
+filter = sing-box
+logpath = $LOG_FILE
+maxretry = 5
+bantime = 7200
+EOF
+
+    # 创建sing-box过滤器
+    cat > "/etc/fail2ban/filter.d/sing-box.conf" << EOF
+[Definition]
+failregex = ^.*\[ERROR\].*connection from <HOST>.*$
+            ^.*\[WARN\].*failed.*<HOST>.*$
+ignoreregex =
+EOF
+
+    # 启动并启用fail2ban
+    systemctl enable fail2ban >/dev/null 2>&1
+    systemctl restart fail2ban
+    
+    if systemctl is-active --quiet fail2ban; then
+        success "Fail2ban 配置完成"
+    else
+        error "Fail2ban 启动失败"
+    fi
 }
 
-# 脚本开始执行
-show_banner
+# 配置SSH安全
+configure_ssh_security() {
+    info "配置 SSH 安全设置..."
+    
+    local ssh_config="/etc/ssh/sshd_config"
+    
+    if [[ ! -f "$ssh_config" ]]; then
+        error "SSH 配置文件不存在"
+        return 1
+    fi
+    
+    # 备份原配置
+    cp "$ssh_config" "${ssh_config}.backup.$(date +%Y%m%d_%H%M%S)"
+    
+    # 修改SSH配置
+    sed -i 's/#PermitRootLogin yes/PermitRootLogin no/' "$ssh_config"
+    sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' "$ssh_config"
+    sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' "$ssh_config"
+    sed -i 's/#MaxAuthTries 6/MaxAuthTries 3/' "$ssh_config"
+    
+    # 添加其他安全设置
+    if ! grep -q "Protocol 2" "$ssh_config"; then
+        echo "Protocol 2" >> "$ssh_config"
+    fi
+    
+    if ! grep -q "ClientAliveInterval" "$ssh_config"; then
+        echo "ClientAliveInterval 300" >> "$ssh_config"
+        echo "ClientAliveCountMax 2" >> "$ssh_config"
+    fi
+    
+    # 重启SSH服务
+    systemctl restart sshd
+    
+    if systemctl is-active --quiet sshd; then
+        success "SSH 安全配置完成"
+        warning "请确保已设置SSH密钥认证，否则可能无法登录"
+    else
+        error "SSH 服务重启失败"
+        # 恢复备份
+        cp "${ssh_config}.backup.$(date +%Y%m%d_%H%M%S)" "$ssh_config"
+        systemctl restart sshd
+    fi
+}
 
-# 创建日志目录
-mkdir -p "$LOG_DIR"
+# 配置防火墙
+configure_firewall() {
+    info "配置防火墙规则..."
+    
+    # 安装ufw
+    if ! command -v ufw >/dev/null 2>&1; then
+        apt install -y ufw >/dev/null 2>&1
+    fi
+    
+    # 重置防火墙规则
+    ufw --force reset >/dev/null 2>&1
+    
+    # 设置默认策略
+    ufw default deny incoming >/dev/null 2>&1
+    ufw default allow outgoing >/dev/null 2>&1
+    
+    # 允许SSH
+    ufw allow ssh >/dev/null 2>&1
+    
+    # 允许sing-box端口
+    if [[ -n "$SELECTED_PORT" ]]; then
+        ufw allow "$SELECTED_PORT" >/dev/null 2>&1
+    fi
+    
+    # 允许HTTP和HTTPS（用于证书申请）
+    ufw allow 80 >/dev/null 2>&1
+    ufw allow 443 >/dev/null 2>&1
+    
+    # 启用防火墙
+    ufw --force enable >/dev/null 2>&1
+    
+    if ufw status | grep -q "Status: active"; then
+        success "防火墙配置完成"
+        echo
+        ufw status numbered
+    else
+        error "防火墙配置失败"
+    fi
+}
 
-# 启动主程序
-main "$@"
+# 检查安全状态
+check_security_status() {
+    echo -e "${CYAN}======================================${NC}"
+    echo -e "${WHITE}           安全状态检查${NC}"
+    echo -e "${CYAN}======================================${NC}"
+    echo
+    
+    # 检查Fail2ban状态
+    echo -e "${GREEN}Fail2ban 状态:${NC}"
+    if systemctl is-active --quiet fail2ban; then
+        echo -e "${GREEN}✓ 运行中${NC}"
+        echo "被封禁的IP:"
+        fail2ban-client status 2>/dev/null | grep "Jail list" || echo "无数据"
+    else
+        echo -e "${RED}✗ 未运行${NC}"
+    fi
+    echo
+    
+    # 检查SSH配置
+    echo -e "${GREEN}SSH 安全配置:${NC}"
+    if grep -q "PermitRootLogin no" /etc/ssh/sshd_config 2>/dev/null; then
+        echo -e "${GREEN}✓ Root登录已禁用${NC}"
+    else
+        echo -e "${YELLOW}⚠ Root登录未禁用${NC}"
+    fi
+    
+    if grep -q "PasswordAuthentication no" /etc/ssh/sshd_config 2>/dev/null; then
+        echo -e "${GREEN}✓ 密码认证已禁用${NC}"
+    else
+        echo -e "${YELLOW}⚠ 密码认证未禁用${NC}"
+    fi
+    echo
+    
+    # 检查防火墙状态
+    echo -e "${GREEN}防火墙状态:${NC}"
+    if command -v ufw >/dev/null 2>&1; then
+        if ufw status | grep -q "Status: active"; then
+            echo -e "${GREEN}✓ 防火墙已启用${NC}"
+            echo "当前规则:"
+            ufw status numbered | head -10
+        else
+            echo -e "${RED}✗ 防火墙未启用${NC}"
+        fi
+    else
+        echo -e "${RED}✗ 防火墙未安装${NC}"
+    fi
+    echo
+    
+    # 检查系统更新
+    echo -e "${GREEN}系统安全:${NC}"
+    local updates
+    updates=$(apt list --upgradable 2>/dev/null | wc -l)
+    if [[ $updates -gt 1 ]]; then
+        echo -e "${YELLOW}⚠ 有 $((updates-1)) 个可用更新${NC}"
+    else
+        echo -e "${GREEN}✓ 系统已是最新${NC}"
+    fi
+}
+
+# 脚本入口点
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi
