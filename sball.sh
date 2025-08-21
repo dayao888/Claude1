@@ -69,6 +69,9 @@ log_error() {
 
 # 检查系统环境
 check_system() {
+    # 创建日志目录（如果不存在）
+    mkdir -p "$(dirname "$LOG_FILE")"
+    
     log_info "检查系统环境..."
     
     # 检查操作系统
@@ -82,9 +85,11 @@ check_system() {
     
     # 检查root权限
     if [[ $EUID -ne 0 ]]; then
-        log_error "请使用root权限运行此脚本"
-        echo -e "${RED}请使用以下命令运行:${NC}"
-        echo -e "${YELLOW}sudo bash $0${NC}"
+        echo -e "${RED}[错误] 此脚本需要root权限运行${NC}"
+        echo -e "${YELLOW}解决方案:${NC}"
+        echo -e "${GREEN}1. 使用sudo运行: sudo bash $0${NC}"
+        echo -e "${GREEN}2. 切换到root用户: su - && bash $0${NC}"
+        echo -e "${CYAN}提示: 如果脚本执行后没有任何输出，请检查是否有权限问题${NC}"
         exit 1
     fi
     
@@ -105,17 +110,30 @@ check_system() {
     
     # 检查网络连接
     log_info "检查网络连接..."
-    if ! ping -c 1 8.8.8.8 &> /dev/null; then
-        log_error "网络连接失败，请检查网络设置"
-        exit 1
+    if ! ping -c 1 8.8.8.8 &> /dev/null && ! ping -c 1 1.1.1.1 &> /dev/null; then
+        log_warn "网络连接可能存在问题，但继续尝试..."
+        log_warn "如果后续下载失败，请检查网络设置或防火墙配置"
     fi
     
     # 获取服务器IP
     log_info "获取服务器IP地址..."
-    SERVER_IP=$(curl -s --connect-timeout 10 ipv4.icanhazip.com || curl -s --connect-timeout 10 ifconfig.me || curl -s --connect-timeout 10 ipinfo.io/ip)
+    # 尝试多个IP获取服务
+    for ip_service in "ipv4.icanhazip.com" "ifconfig.me" "ipinfo.io/ip" "api.ipify.org" "checkip.amazonaws.com"; do
+        SERVER_IP=$(curl -s --connect-timeout 5 --max-time 10 "$ip_service" 2>/dev/null | tr -d '\n\r')
+        if [[ -n "$SERVER_IP" ]] && [[ $SERVER_IP =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+            log_info "通过 $ip_service 获取到IP: $SERVER_IP"
+            break
+        fi
+        log_warn "从 $ip_service 获取IP失败，尝试下一个服务..."
+    done
+    
     if [[ -z "$SERVER_IP" ]]; then
         log_error "无法获取服务器IP地址"
-        log_error "请检查网络连接或手动设置SERVER_IP变量"
+        log_error "可能的原因:"
+        log_error "1. 网络连接问题"
+        log_error "2. 防火墙阻止了外部连接"
+        log_error "3. DNS解析问题"
+        log_error "解决方案: 请手动设置SERVER_IP变量或检查网络设置"
         exit 1
     fi
     
@@ -145,6 +163,27 @@ install_dependencies() {
     fi
     
     log_info "依赖安装完成"
+}
+
+# 下载Sing-box（支持多种镜像源）
+download_singbox() {
+    local download_url="$1"
+    local filename="$2"
+    local temp_dir="$3"
+    
+    log_info "尝试从 $download_url 下载..."
+    
+    # 尝试下载
+    if curl -L --connect-timeout 10 --max-time 300 -o "$temp_dir/$filename" "$download_url" 2>/dev/null; then
+        log_info "下载成功"
+        return 0
+    elif wget --timeout=10 --tries=3 -O "$temp_dir/$filename" "$download_url" 2>/dev/null; then
+        log_info "下载成功"
+        return 0
+    else
+        log_warn "下载失败"
+        return 1
+    fi
 }
 
 # 安装Sing-box
@@ -181,15 +220,36 @@ install_singbox() {
             ;;
     esac
     
-    # 构建下载URL
-    local download_url="https://github.com/SagerNet/sing-box/releases/download/v${SING_BOX_VERSION}/sing-box-${SING_BOX_VERSION}-linux-${download_arch}.tar.gz"
+    # 构建下载URL列表（包含备用地址）
+    local download_urls=(
+        "https://github.com/SagerNet/sing-box/releases/download/v${SING_BOX_VERSION}/sing-box-${SING_BOX_VERSION}-linux-${download_arch}.tar.gz"
+        "https://mirror.ghproxy.com/https://github.com/SagerNet/sing-box/releases/download/v${SING_BOX_VERSION}/sing-box-${SING_BOX_VERSION}-linux-${download_arch}.tar.gz"
+        "https://ghproxy.net/https://github.com/SagerNet/sing-box/releases/download/v${SING_BOX_VERSION}/sing-box-${SING_BOX_VERSION}-linux-${download_arch}.tar.gz"
+    )
     local temp_file="/tmp/sing-box.tar.gz"
     
     log_info "下载Sing-box v$SING_BOX_VERSION ($download_arch)..."
     
-    # 下载文件
-    if ! curl -L "$download_url" -o "$temp_file" --connect-timeout 30 --max-time 300; then
-        log_error "下载Sing-box失败"
+    # 尝试从多个地址下载
+    local download_success=false
+    for download_url in "${download_urls[@]}"; do
+        log_info "尝试从 $(echo "$download_url" | cut -d'/' -f3) 下载..."
+        if curl -L "$download_url" -o "$temp_file" --connect-timeout 30 --max-time 300 --progress-bar; then
+            download_success=true
+            log_info "下载成功"
+            break
+        else
+            log_warn "从该地址下载失败，尝试下一个地址..."
+        fi
+    done
+    
+    if [[ "$download_success" != "true" ]]; then
+        log_error "所有下载地址都失败了"
+        log_error "可能的原因:"
+        log_error "1. 网络连接问题"
+        log_error "2. GitHub访问受限"
+        log_error "3. 防火墙阻止下载"
+        log_error "解决方案: 请检查网络连接或使用VPN"
         exit 1
     fi
     
@@ -330,10 +390,7 @@ generate_protocol_config() {
   },
   "multiplex": {
     "enabled": true,
-    "protocol": "h2mux",
-    "max_connections": 4,
-    "min_streams": 4,
-    "max_streams": 0
+    "padding": false
   }
 }
 EOF
@@ -423,10 +480,7 @@ EOF
   "password": "$password",
   "multiplex": {
     "enabled": true,
-    "protocol": "h2mux",
-    "max_connections": 4,
-    "min_streams": 4,
-    "max_streams": 0
+    "padding": false
   }
 }
 EOF
@@ -450,10 +504,7 @@ EOF
   },
   "multiplex": {
     "enabled": true,
-    "protocol": "h2mux",
-    "max_connections": 4,
-    "min_streams": 4,
-    "max_streams": 0
+    "padding": false
   }
 }
 EOF
@@ -480,10 +531,7 @@ EOF
   },
   "multiplex": {
     "enabled": true,
-    "protocol": "h2mux",
-    "max_connections": 4,
-    "min_streams": 4,
-    "max_streams": 0
+    "padding": false
   }
 }
 EOF
@@ -515,10 +563,7 @@ EOF
   },
   "multiplex": {
     "enabled": true,
-    "protocol": "h2mux",
-    "max_connections": 4,
-    "min_streams": 4,
-    "max_streams": 0
+    "padding": false
   }
 }
 EOF
@@ -770,6 +815,31 @@ generate_certificates() {
     log_info "证书生成完成"
 }
 
+# 验证配置文件
+validate_config_file() {
+    log_info "验证配置文件语法..."
+    
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        log_error "配置文件不存在: $CONFIG_FILE"
+        return 1
+    fi
+    
+    # 使用sing-box验证配置文件
+    if "$SING_BOX_BIN" check -c "$CONFIG_FILE" 2>/dev/null; then
+        log_info "配置文件语法验证通过"
+        return 0
+    else
+        log_error "配置文件语法验证失败"
+        log_error "请检查配置文件: $CONFIG_FILE"
+        
+        # 显示详细错误信息
+        local error_output=$("$SING_BOX_BIN" check -c "$CONFIG_FILE" 2>&1)
+        log_error "错误详情: $error_output"
+        
+        return 1
+    fi
+}
+
 # 生成主配置文件
 generate_main_config() {
     log_info "生成Sing-box配置文件..."
@@ -831,6 +901,9 @@ generate_main_config() {
 EOF
     
     log_info "配置文件生成完成"
+    
+    # 验证配置文件语法
+    validate_config_file
 }
 
 # 创建系统服务
