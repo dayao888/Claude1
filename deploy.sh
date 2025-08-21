@@ -2,6 +2,7 @@
 
 # SBall 一键部署脚本
 # 使用方法: curl -fsSL https://raw.githubusercontent.com/dayao888/Claude1/main/deploy.sh | bash
+# 自动修复Windows换行符问题，确保脚本在Linux系统正常运行
 
 set -e
 
@@ -83,6 +84,17 @@ download_script() {
     if [[ ! -f "sball.sh" ]]; then
         log_error "下载脚本失败"
         exit 1
+    fi
+    
+    # 修复Windows换行符问题
+    log_info "修复换行符格式..."
+    if command -v dos2unix >/dev/null 2>&1; then
+        dos2unix "sball.sh" 2>/dev/null
+    elif command -v sed >/dev/null 2>&1; then
+        sed -i 's/\r$//' "sball.sh" 2>/dev/null
+    else
+        # 使用tr命令删除回车符
+        tr -d '\r' < "sball.sh" > "sball.sh.tmp" && mv "sball.sh.tmp" "sball.sh"
     fi
     
     # 添加执行权限
