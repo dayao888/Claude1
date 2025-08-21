@@ -605,7 +605,11 @@ EOF
   "tag": "anytls",
   "listen": "::",
   "listen_port": $port,
-  "password": "$uuid",
+  "users": [
+    {
+      "password": "$password"
+    }
+  ],
   "tls": {
     "enabled": true,
     "certificate_path": "$CERT_DIR/cert.pem",
