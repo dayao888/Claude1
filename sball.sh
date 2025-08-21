@@ -7,7 +7,7 @@
 # 脚本信息
 SCRIPT_VERSION="1.0.0"
 SCRIPT_NAME="SBall"
-GITHUB_REPO="https://github.com/dayaocc/sball"
+GITHUB_REPO="https://github.com/dayao888/Claude1"
 
 # 颜色定义
 RED='\033[0;31m'
@@ -29,7 +29,7 @@ LOG_FILE="/var/log/sball.log"
 SERVICE_NAME="sball"
 
 # Sing-box配置
-SING_BOX_VERSION="1.12.0"
+SING_BOX_VERSION="1.12.2"
 SING_BOX_URL="https://github.com/SagerNet/sing-box/releases/download/v${SING_BOX_VERSION}/sing-box-${SING_BOX_VERSION}-linux-amd64.tar.gz"
 SING_BOX_BIN="/usr/local/bin/sing-box"
 
@@ -153,10 +153,10 @@ install_dependencies() {
     # 更新包管理器
     if command -v apt &> /dev/null; then
         apt update -y
-        apt install -y curl wget unzip tar jq openssl ufw fail2ban
+        apt install -y curl wget unzip tar jq openssl ufw
     elif command -v yum &> /dev/null; then
         yum update -y
-        yum install -y curl wget unzip tar jq openssl firewalld fail2ban
+        yum install -y curl wget unzip tar jq openssl firewalld
     else
         log_error "不支持的包管理器"
         exit 1
@@ -698,7 +698,7 @@ show_main_menu() {
     echo -e "${GREEN}7.${NC} 查看服务状态 ${GRAY}(检查运行状态)${NC}"
     echo -e "${GREEN}8.${NC} 查看服务日志 ${GRAY}(查看运行日志)${NC}"
     echo -e "${GREEN}9.${NC} 重启服务 ${GRAY}(重启代理服务)${NC}"
-    echo -e "${GREEN}10.${NC} Fail2ban管理 ${GRAY}(防护设置)${NC}"
+
     echo -e "${GREEN}0.${NC} 退出脚本"
     echo
     echo -e "${CYAN}================================${NC}"
@@ -943,11 +943,7 @@ configure_firewall() {
     # 开放订阅服务端口
     ufw allow 8000
     
-    # 配置fail2ban防护
-    configure_fail2ban
-    
-    # 配置BBR加速
-    configure_bbr
+    # 基础配置完成
     
     # 启用防火墙
     ufw --force enable
@@ -955,502 +951,31 @@ configure_firewall() {
     log_info "防火墙和安全防护配置完成"
 }
 
-# 配置fail2ban防护（默认关闭）
-configure_fail2ban() {
-    log_info "配置fail2ban防护（默认关闭状态）..."
-    
-    # 检测系统类型以确定正确的日志路径
-    local ssh_log_path="/var/log/auth.log"
-    if [[ -f "/var/log/secure" ]]; then
-        ssh_log_path="/var/log/secure"  # CentOS/RHEL
-    fi
-    
-    # 获取当前服务器IP作为白名单
-    local server_ip=$(curl -s ifconfig.me 2>/dev/null || curl -s ipinfo.io/ip 2>/dev/null || echo "127.0.0.1")
-    
-    # 创建fail2ban配置
-    cat > "/etc/fail2ban/jail.d/sball.conf" << EOF
-[DEFAULT]
-# 白名单设置 - 包含服务器IP和常用内网段
-ignoreip = 127.0.0.1/8 ::1 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 $server_ip
 
-[sball-ssh]
-# SSH防护 - 默认关闭，可通过管理菜单启用
-enabled = false
-port = ssh
-filter = sshd
-logpath = $ssh_log_path
-maxretry = 5
-bantime = 3600
-findtime = 600
 
-[sball-proxy]
-# 代理服务防护 - 默认关闭，可通过管理菜单启用
-enabled = false
-port = ${PROTOCOL_PORTS[*]}
-filter = sball-proxy
-logpath = $LOG_FILE
-maxretry = 10
-bantime = 1800
-findtime = 300
-EOF
-    
-    # 创建代理过滤规则
-    cat > "/etc/fail2ban/filter.d/sball-proxy.conf" << EOF
-[Definition]
-failregex = ^.*\[ERROR\].*from <HOST>.*$
-            ^.*connection failed.*from <HOST>.*$
-            ^.*authentication failed.*from <HOST>.*$
-ignoreregex =
-EOF
-    
-    # 安装并启用fail2ban服务，但jail默认关闭
-    systemctl enable fail2ban
-    systemctl restart fail2ban
-    
-    log_info "fail2ban防护配置完成（默认关闭状态，可通过菜单管理）"
-}
 
-# Fail2ban管理菜单
-manage_fail2ban() {
-    while true; do
-        clear
-        echo -e "${CYAN}================================${NC}"
-        echo -e "${WHITE}    Fail2ban 防护管理${NC}"
-        echo -e "${CYAN}================================${NC}"
-        echo
-        
-        # 检查fail2ban服务状态
-        local fail2ban_status=$(systemctl is-active fail2ban 2>/dev/null || echo "未安装")
-        local ssh_jail_status="未知"
-        local proxy_jail_status="未知"
-        
-        if [[ "$fail2ban_status" == "active" ]]; then
-            ssh_jail_status=$(fail2ban-client status sball-ssh 2>/dev/null | grep "Status" | awk '{print $2}' || echo "关闭")
-            proxy_jail_status=$(fail2ban-client status sball-proxy 2>/dev/null | grep "Status" | awk '{print $2}' || echo "关闭")
-        fi
-        
-        echo -e "${YELLOW}当前状态:${NC}"
-        echo -e "  Fail2ban服务: $fail2ban_status"
-        echo -e "  SSH防护: $ssh_jail_status"
-        echo -e "  代理防护: $proxy_jail_status"
-        echo
-        
-        echo -e "${GREEN}1.${NC} 启用SSH防护 ${GRAY}(防止SSH暴力破解)${NC}"
-        echo -e "${GREEN}2.${NC} 关闭SSH防护 ${GRAY}(停止SSH监控)${NC}"
-        echo -e "${GREEN}3.${NC} 启用代理防护 ${GRAY}(防止代理服务攻击)${NC}"
-        echo -e "${GREEN}4.${NC} 关闭代理防护 ${GRAY}(停止代理监控)${NC}"
-        echo -e "${GREEN}5.${NC} 查看封禁列表 ${GRAY}(显示被封IP)${NC}"
-        echo -e "${GREEN}6.${NC} 解封指定IP ${GRAY}(手动解除封禁)${NC}"
-        echo -e "${GREEN}7.${NC} 添加白名单IP ${GRAY}(永久信任IP)${NC}"
-        echo -e "${GREEN}8.${NC} 查看配置信息 ${GRAY}(显示当前设置)${NC}"
-        echo -e "${GREEN}9.${NC} 重置为推荐配置 ${GRAY}(恢复安全设置)${NC}"
-        echo -e "${GREEN}0.${NC} 返回主菜单"
-        echo
-        echo -e "${CYAN}================================${NC}"
-        
-        read -p "请选择操作 [0-9]: " choice
-        
-        case $choice in
-            1)
-                enable_ssh_protection
-                ;;
-            2)
-                disable_ssh_protection
-                ;;
-            3)
-                enable_proxy_protection
-                ;;
-            4)
-                disable_proxy_protection
-                ;;
-            5)
-                show_banned_ips
-                ;;
-            6)
-                unban_ip
-                ;;
-            7)
-                add_whitelist_ip
-                ;;
-            8)
-                show_fail2ban_config
-                ;;
-            9)
-                reset_fail2ban_config
-                ;;
-            0)
-                return
-                ;;
-            *)
-                echo -e "${RED}无效选项，请重新选择${NC}"
-                ;;
-        esac
-        
-        if [[ $choice != 0 ]]; then
-            read -p "按回车键继续..."
-        fi
-    done
-}
 
-# 启用SSH防护
-enable_ssh_protection() {
-    log_info "启用SSH防护..."
-    
-    if ! systemctl is-active --quiet fail2ban; then
-        log_error "Fail2ban服务未运行，请先安装代理服务"
-        return 1
-    fi
-    
-    # 修改配置文件启用SSH jail
-    sed -i '/\[sball-ssh\]/,/^\[/ s/enabled = false/enabled = true/' /etc/fail2ban/jail.d/sball.conf
-    
-    # 重新加载配置
-    fail2ban-client reload sball-ssh 2>/dev/null || fail2ban-client restart
-    
-    log_info "SSH防护已启用"
-    echo -e "${GREEN}SSH防护已启用，将监控SSH登录失败尝试${NC}"
-    echo -e "${YELLOW}配置: 5次失败尝试后封禁1小时${NC}"
-}
 
-# 关闭SSH防护
-disable_ssh_protection() {
-    log_info "关闭SSH防护..."
-    
-    if ! systemctl is-active --quiet fail2ban; then
-        log_warn "Fail2ban服务未运行"
-        return 1
-    fi
-    
-    # 修改配置文件关闭SSH jail
-    sed -i '/\[sball-ssh\]/,/^\[/ s/enabled = true/enabled = false/' /etc/fail2ban/jail.d/sball.conf
-    
-    # 停止jail并重新加载
-    fail2ban-client stop sball-ssh 2>/dev/null
-    fail2ban-client reload 2>/dev/null
-    
-    log_info "SSH防护已关闭"
-    echo -e "${YELLOW}SSH防护已关闭，不再监控SSH登录${NC}"
-}
 
-# 启用代理防护
-enable_proxy_protection() {
-    log_info "启用代理防护..."
-    
-    if ! systemctl is-active --quiet fail2ban; then
-        log_error "Fail2ban服务未运行，请先安装代理服务"
-        return 1
-    fi
-    
-    # 修改配置文件启用代理jail
-    sed -i '/\[sball-proxy\]/,/^\[/ s/enabled = false/enabled = true/' /etc/fail2ban/jail.d/sball.conf
-    
-    # 重新加载配置
-    fail2ban-client reload sball-proxy 2>/dev/null || fail2ban-client restart
-    
-    log_info "代理防护已启用"
-    echo -e "${GREEN}代理防护已启用，将监控代理服务异常连接${NC}"
-    echo -e "${YELLOW}配置: 10次失败尝试后封禁30分钟${NC}"
-}
 
-# 关闭代理防护
-disable_proxy_protection() {
-    log_info "关闭代理防护..."
-    
-    if ! systemctl is-active --quiet fail2ban; then
-        log_warn "Fail2ban服务未运行"
-        return 1
-    fi
-    
-    # 修改配置文件关闭代理jail
-    sed -i '/\[sball-proxy\]/,/^\[/ s/enabled = true/enabled = false/' /etc/fail2ban/jail.d/sball.conf
-    
-    # 停止jail并重新加载
-    fail2ban-client stop sball-proxy 2>/dev/null
-    fail2ban-client reload 2>/dev/null
-    
-    log_info "代理防护已关闭"
-    echo -e "${YELLOW}代理防护已关闭，不再监控代理服务${NC}"
-}
 
-# 查看封禁列表
-show_banned_ips() {
-    echo -e "${CYAN}当前封禁IP列表:${NC}"
-    echo
-    
-    if ! systemctl is-active --quiet fail2ban; then
-        echo -e "${RED}Fail2ban服务未运行${NC}"
-        return 1
-    fi
-    
-    # 显示SSH jail封禁列表
-    echo -e "${YELLOW}SSH防护封禁列表:${NC}"
-    local ssh_banned=$(fail2ban-client status sball-ssh 2>/dev/null | grep "Banned IP list" | cut -d: -f2 | xargs)
-    if [[ -n "$ssh_banned" && "$ssh_banned" != "" ]]; then
-        echo "  $ssh_banned"
-    else
-        echo -e "  ${GRAY}无封禁IP${NC}"
-    fi
-    echo
-    
-    # 显示代理jail封禁列表
-    echo -e "${YELLOW}代理防护封禁列表:${NC}"
-    local proxy_banned=$(fail2ban-client status sball-proxy 2>/dev/null | grep "Banned IP list" | cut -d: -f2 | xargs)
-    if [[ -n "$proxy_banned" && "$proxy_banned" != "" ]]; then
-        echo "  $proxy_banned"
-    else
-        echo -e "  ${GRAY}无封禁IP${NC}"
-    fi
-    echo
-    
-    # 显示总体统计
-    echo -e "${CYAN}封禁统计:${NC}"
-    fail2ban-client status 2>/dev/null | grep -E "Number of jail|Currently banned" || echo -e "${RED}无法获取统计信息${NC}"
-}
 
-# 解封指定IP
-unban_ip() {
-    echo -e "${CYAN}解封IP地址${NC}"
-    echo
-    
-    if ! systemctl is-active --quiet fail2ban; then
-        echo -e "${RED}Fail2ban服务未运行${NC}"
-        return 1
-    fi
-    
-    read -p "请输入要解封的IP地址: " ip_address
-    
-    if [[ -z "$ip_address" ]]; then
-        echo -e "${RED}IP地址不能为空${NC}"
-        return 1
-    fi
-    
-    # 验证IP格式
-    if ! [[ $ip_address =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
-        echo -e "${RED}IP地址格式不正确${NC}"
-        return 1
-    fi
-    
-    # 尝试从所有jail中解封
-    local unban_success=false
-    
-    if fail2ban-client unban "$ip_address" 2>/dev/null; then
-        unban_success=true
-    fi
-    
-    if fail2ban-client set sball-ssh unbanip "$ip_address" 2>/dev/null; then
-        unban_success=true
-    fi
-    
-    if fail2ban-client set sball-proxy unbanip "$ip_address" 2>/dev/null; then
-        unban_success=true
-    fi
-    
-    if [[ "$unban_success" == "true" ]]; then
-        log_info "IP $ip_address 已解封"
-        echo -e "${GREEN}IP $ip_address 已成功解封${NC}"
-    else
-        echo -e "${YELLOW}IP $ip_address 可能未被封禁或解封失败${NC}"
-    fi
-}
 
-# 添加白名单IP
-add_whitelist_ip() {
-    echo -e "${CYAN}添加白名单IP${NC}"
-    echo
-    
-    read -p "请输入要添加到白名单的IP地址或网段 (例如: 192.168.1.100 或 192.168.1.0/24): " ip_input
-    
-    if [[ -z "$ip_input" ]]; then
-        echo -e "${RED}IP地址不能为空${NC}"
-        return 1
-    fi
-    
-    # 检查配置文件是否存在
-    if [[ ! -f "/etc/fail2ban/jail.d/sball.conf" ]]; then
-        echo -e "${RED}Fail2ban配置文件不存在，请先安装代理服务${NC}"
-        return 1
-    fi
-    
-    # 获取当前白名单
-    local current_whitelist=$(grep "ignoreip" /etc/fail2ban/jail.d/sball.conf | cut -d= -f2 | xargs)
-    
-    # 检查IP是否已在白名单中
-    if echo "$current_whitelist" | grep -q "$ip_input"; then
-        echo -e "${YELLOW}IP $ip_input 已在白名单中${NC}"
-        return 0
-    fi
-    
-    # 添加到白名单
-    sed -i "/ignoreip/s/$/ $ip_input/" /etc/fail2ban/jail.d/sball.conf
-    
-    # 重新加载fail2ban配置
-    if systemctl is-active --quiet fail2ban; then
-        fail2ban-client reload 2>/dev/null
-    fi
-    
-    log_info "IP $ip_input 已添加到白名单"
-    echo -e "${GREEN}IP $ip_input 已成功添加到白名单${NC}"
-    echo -e "${YELLOW}白名单中的IP永远不会被封禁${NC}"
-}
 
-# 查看配置信息
-show_fail2ban_config() {
-    echo -e "${CYAN}Fail2ban配置信息${NC}"
-    echo
-    
-    if [[ ! -f "/etc/fail2ban/jail.d/sball.conf" ]]; then
-        echo -e "${RED}配置文件不存在${NC}"
-        return 1
-    fi
-    
-    echo -e "${YELLOW}当前配置:${NC}"
-    echo
-    
-    # 显示白名单
-    echo -e "${GREEN}白名单IP:${NC}"
-    local whitelist=$(grep "ignoreip" /etc/fail2ban/jail.d/sball.conf | cut -d= -f2 | xargs)
-    echo "  $whitelist"
-    echo
-    
-    # 显示SSH配置
-    echo -e "${GREEN}SSH防护配置:${NC}"
-    grep -A 6 "\[sball-ssh\]" /etc/fail2ban/jail.d/sball.conf | grep -E "enabled|maxretry|bantime|findtime" | sed 's/^/  /'
-    echo
-    
-    # 显示代理配置
-    echo -e "${GREEN}代理防护配置:${NC}"
-    grep -A 6 "\[sball-proxy\]" /etc/fail2ban/jail.d/sball.conf | grep -E "enabled|maxretry|bantime|findtime" | sed 's/^/  /'
-    echo
-    
-    # 显示服务状态
-    if systemctl is-active --quiet fail2ban; then
-        echo -e "${GREEN}Fail2ban服务状态: 运行中${NC}"
-        fail2ban-client status 2>/dev/null | head -5
-    else
-        echo -e "${RED}Fail2ban服务状态: 未运行${NC}"
-    fi
-}
 
-# 重置为推荐配置
-reset_fail2ban_config() {
-    echo -e "${CYAN}重置Fail2ban为推荐配置${NC}"
-    echo -e "${YELLOW}这将恢复安全的默认设置${NC}"
-    echo
-    
-    read -p "确认重置配置? [y/N]: " confirm
-    if [[ ! $confirm =~ ^[Yy]$ ]]; then
-        echo -e "${YELLOW}取消重置操作${NC}"
-        return 0
-    fi
-    
-    log_info "重置Fail2ban配置..."
-    
-    # 检测系统类型以确定正确的日志路径
-    local ssh_log_path="/var/log/auth.log"
-    if [[ -f "/var/log/secure" ]]; then
-        ssh_log_path="/var/log/secure"  # CentOS/RHEL
-    fi
-    
-    # 获取当前服务器IP作为白名单
-    local server_ip=$(curl -s ifconfig.me 2>/dev/null || curl -s ipinfo.io/ip 2>/dev/null || echo "127.0.0.1")
-    
-    # 重新生成推荐配置
-    cat > "/etc/fail2ban/jail.d/sball.conf" << EOF
-[DEFAULT]
-# 白名单设置 - 包含服务器IP和常用内网段
-ignoreip = 127.0.0.1/8 ::1 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 $server_ip
 
-[sball-ssh]
-# SSH防护 - 推荐启用
-enabled = true
-port = ssh
-filter = sshd
-logpath = $ssh_log_path
-maxretry = 5
-bantime = 3600
-findtime = 600
 
-[sball-proxy]
-# 代理服务防护 - 推荐关闭（避免误封）
-enabled = false
-port = ${PROTOCOL_PORTS[*]:-"10000-20000"}
-filter = sball-proxy
-logpath = $LOG_FILE
-maxretry = 10
-bantime = 1800
-findtime = 300
-EOF
-    
-    # 重新加载配置
-    if systemctl is-active --quiet fail2ban; then
-        fail2ban-client reload 2>/dev/null
-    fi
-    
-    log_info "Fail2ban配置已重置为推荐设置"
-    echo -e "${GREEN}配置已重置为推荐设置:${NC}"
-    echo -e "  - SSH防护: 启用 (5次失败封禁1小时)"
-    echo -e "  - 代理防护: 关闭 (避免误封)"
-    echo -e "  - 白名单: 包含服务器IP和内网段"
-}
 
-# 配置BBR加速
-configure_bbr() {
-    log_info "配置BBR网络加速..."
-    
-    # 检查内核版本
-    local kernel_version=$(uname -r | cut -d. -f1-2)
-    local major_version=$(echo $kernel_version | cut -d. -f1)
-    local minor_version=$(echo $kernel_version | cut -d. -f2)
-    
-    if [[ $major_version -gt 4 ]] || [[ $major_version -eq 4 && $minor_version -ge 9 ]]; then
-        # 启用BBR
-        echo 'net.core.default_qdisc=fq' >> /etc/sysctl.conf
-        echo 'net.ipv4.tcp_congestion_control=bbr' >> /etc/sysctl.conf
-        
-        # 应用设置
-        sysctl -p
-        
-        log_info "BBR加速已启用"
-    else
-        log_warn "内核版本过低，无法启用BBR加速"
-    fi
-}
 
-# IP优化和伪装
-optimize_ip_protection() {
-    log_info "配置IP保护和流量伪装..."
-    
-    # 随机化端口范围
-    local port_range_start=$((RANDOM % 10000 + 20000))
-    local port_range_end=$((port_range_start + 1000))
-    
-    # 配置iptables规则进行流量伪装
-    iptables -t nat -A OUTPUT -p tcp --dport 80 -j REDIRECT --to-port 8080
-    iptables -t nat -A OUTPUT -p tcp --dport 443 -j REDIRECT --to-port 8443
-    
-    # 保存iptables规则
-    if command -v iptables-save &> /dev/null; then
-        iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
-    fi
-    
-    # 配置系统参数优化
-    cat >> /etc/sysctl.conf << EOF
-# SBall网络优化
-net.ipv4.tcp_fastopen=3
-net.ipv4.tcp_window_scaling=1
-net.ipv4.tcp_timestamps=1
-net.ipv4.tcp_sack=1
-net.core.rmem_max=134217728
-net.core.wmem_max=134217728
-net.ipv4.tcp_rmem=4096 65536 134217728
-net.ipv4.tcp_wmem=4096 65536 134217728
-EOF
-    
-    sysctl -p
-    
-    log_info "IP保护和流量优化配置完成"
-}
+
+
+
+
+
+
+
+
+
 
 # 保存配置信息
 save_config_info() {
@@ -2023,10 +1548,7 @@ main() {
                 restart_service
                 read -p "按回车键继续..."
                 ;;
-            10)
-                manage_fail2ban
-                read -p "按回车键继续..."
-                ;;
+
             0)
                 log_info "退出SBall管理面板"
                 echo -e "${GREEN}感谢使用 $SCRIPT_NAME!${NC}"
