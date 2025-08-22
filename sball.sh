@@ -1236,7 +1236,8 @@ generate_main_config() {
         "final": "google",
         "strategy": "prefer_ipv4",
         "disable_cache": false,
-        "disable_expire": false
+        "disable_expire": false,
+        "default_domain_resolver": "local"
     },
     "inbounds": [],
     "outbounds": [
@@ -1884,7 +1885,7 @@ generate_singbox_client_config() {
         "server": "8.8.8.8"
       }
     ]
-  }
+  },
   "inbounds": [
     {
       "type": "mixed",
@@ -2100,8 +2101,17 @@ main_install() {
     print_success "$(get_text 'install_success')"
     print_info "所有15种协议配置已生成完成"
     
-    # 显示节点信息
-    show_node_info
+    # 启动服务
+    print_info "正在启动 Sing-box 服务..."
+    if start_singbox_service; then
+        print_success "Sing-box 服务启动成功"
+        echo
+        # 显示节点信息
+        show_node_info
+    else
+        print_error "Sing-box 服务启动失败，请检查配置"
+        print_info "您可以稍后使用菜单选项1重新启动服务"
+    fi
 }
 
 # =============================================================================
