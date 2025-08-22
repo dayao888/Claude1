@@ -35,6 +35,35 @@ SERVER_DOMAIN=""
 USE_CUSTOM_PORT="false"
 CUSTOM_PORT_RANGE=""
 
+# GitHub 镜像配置 - 解决国内网络访问问题
+GH_PROXY="https://ghproxy.com/"
+
+# 检测并设置最佳的GitHub访问方式
+detect_github_access() {
+    print_info "正在检测最佳的GitHub访问方式..."
+    
+    # 测试镜像可用性
+    if curl -s --connect-timeout 5 --max-time 10 "${GH_PROXY}https://api.github.com" >/dev/null 2>&1; then
+        print_success "使用GitHub镜像: ${GH_PROXY}"
+        return 0
+    fi
+    
+    # 镜像不可用，尝试直连
+    if curl -s --connect-timeout 5 --max-time 10 "https://api.github.com" >/dev/null 2>&1; then
+        print_warning "镜像不可用，切换到直连模式"
+        GH_PROXY=""
+        return 0
+    fi
+    
+    # 都不可用，提示用户
+    print_error "GitHub访问失败，请检查网络连接"
+    print_info "您可以尝试以下解决方案："
+    print_info "1. 检查网络连接"
+    print_info "2. 配置代理服务器"
+    print_info "3. 使用其他镜像地址"
+    return 1
+}
+
 # 端口配置 - 基于详细开发方案
 REALITY_HANDSHAKE_PORT=443
 SHADOWTLS_HANDSHAKE_PORT=443
@@ -48,20 +77,16 @@ declare -a PROTOCOL_UUIDS
 # 协议配置
 PROTOCOL_CONFIGS=(
     "xtls-reality"
-    "vless-reality" 
     "hysteria2"
     "tuic"
     "shadowtls"
-    "trojan"
-    "vmess"
-    "vless"
     "shadowsocks"
-    "naive"
+    "trojan"
+    "vmess-ws"
+    "vless-ws-tls"
     "h2-reality"
     "grpc-reality"
     "anytls"
-    "direct"
-    "mixed"
 )
 
 # 证书配置
@@ -237,7 +262,7 @@ check_port() {
 generate_consecutive_ports() {
     local start_port=10000
     local end_port=65000
-    local needed_ports=15  # 15个协议端口
+    local needed_ports=11  # 11个协议端口
     
     for ((port=start_port; port<=end_port-needed_ports; port++)); do
         local all_available=true
@@ -253,20 +278,16 @@ generate_consecutive_ports() {
         if [[ "${all_available}" == "true" ]]; then
             # 分配端口给各协议
             PROTOCOL_PORTS[0]=$((port))      # xtls-reality
-            PROTOCOL_PORTS[1]=$((port + 1))  # vless-reality
-            PROTOCOL_PORTS[2]=$((port + 2))  # hysteria2
-            PROTOCOL_PORTS[3]=$((port + 3))  # tuic
-            PROTOCOL_PORTS[4]=$((port + 4))  # shadowtls
+            PROTOCOL_PORTS[1]=$((port + 1))  # hysteria2
+            PROTOCOL_PORTS[2]=$((port + 2))  # tuic
+            PROTOCOL_PORTS[3]=$((port + 3))  # shadowtls
+            PROTOCOL_PORTS[4]=$((port + 4))  # shadowsocks
             PROTOCOL_PORTS[5]=$((port + 5))  # trojan
-            PROTOCOL_PORTS[6]=$((port + 6))  # vmess
-            PROTOCOL_PORTS[7]=$((port + 7))  # vless
-            PROTOCOL_PORTS[8]=$((port + 8))  # shadowsocks
-            PROTOCOL_PORTS[9]=$((port + 9))  # naive
-            PROTOCOL_PORTS[10]=$((port + 10)) # h2-reality
-            PROTOCOL_PORTS[11]=$((port + 11)) # grpc-reality
-            PROTOCOL_PORTS[12]=$((port + 12)) # anytls
-            PROTOCOL_PORTS[13]=$((port + 13)) # direct
-            PROTOCOL_PORTS[14]=$((port + 14)) # mixed
+            PROTOCOL_PORTS[6]=$((port + 6))  # vmess-ws
+            PROTOCOL_PORTS[7]=$((port + 7))  # vless-ws-tls
+            PROTOCOL_PORTS[8]=$((port + 8))  # h2-reality
+            PROTOCOL_PORTS[9]=$((port + 9))  # grpc-reality
+            PROTOCOL_PORTS[10]=$((port + 10)) # anytls
             
             print_success "已分配端口范围: ${port}-$((port + needed_ports - 1))"
             return 0
@@ -361,7 +382,7 @@ check_required_tools() {
 download_singbox() {
     print_info "$(get_text 'download_singbox')"
     
-    local download_url="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-linux-${ARCH}.tar.gz"
+    local download_url="${GH_PROXY}https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-linux-${ARCH}.tar.gz"
     local temp_dir="/tmp/sing-box-install"
     local archive_file="${temp_dir}/sing-box.tar.gz"
     
@@ -643,7 +664,7 @@ generate_protocol_variables() {
     print_info "正在生成协议配置变量..."
     
     # 生成UUID数组
-    for i in {0..14}; do
+    for i in {0..10}; do
         PROTOCOL_UUIDS[${i}]=$(generate_uuid)
     done
     
@@ -716,44 +737,7 @@ EOF
     print_info "XTLS-Reality配置已生成: ${config_file}"
 }
 
-# 生成VLESS-Reality配置
-generate_vless_reality_config() {
-    local config_file="${SINGBOX_CONFIG_DIR}/vless-reality.json"
-    
-    cat > "${config_file}" << EOF
-{
-    "inbounds": [
-        {
-            "type": "vless",
-            "tag": "vless-reality-in",
-            "listen": "::",
-            "listen_port": ${PROTOCOL_PORTS[1]},
-            "users": [
-                {
-                    "uuid": "${PROTOCOL_UUIDS[1]}",
-                    "flow": ""
-                }
-            ],
-            "tls": {
-                "enabled": true,
-                "server_name": "${TLS_SERVER_NAME}",
-                "reality": {
-                    "enabled": true,
-                    "handshake": {
-                        "server": "${TLS_SERVER_NAME}",
-                        "server_port": ${REALITY_HANDSHAKE_PORT}
-                    },
-                    "private_key": "${REALITY_PRIVATE_KEY}",
-                    "short_id": [""]
-                }
-            }
-        }
-    ]
-}
-EOF
-    
-    print_info "VLESS-Reality配置已生成: ${config_file}"
-}
+
 
 # 生成Hysteria2配置
 generate_hysteria2_config() {
@@ -897,16 +881,16 @@ EOF
     print_info "Trojan配置已生成: ${config_file}"
 }
 
-# 生成VMess配置
-generate_vmess_config() {
-    local config_file="${SINGBOX_CONFIG_DIR}/vmess.json"
+# 生成VMess-WS配置
+generate_vmess_ws_config() {
+    local config_file="${SINGBOX_CONFIG_DIR}/vmess-ws.json"
     
     cat > "${config_file}" << EOF
 {
     "inbounds": [
         {
             "type": "vmess",
-            "tag": "vmess-in",
+            "tag": "vmess-ws-in",
             "listen": "::",
             "listen_port": ${PROTOCOL_PORTS[6]},
             "users": [
@@ -921,33 +905,38 @@ generate_vmess_config() {
                 "max_early_data": 2048,
                 "early_data_header_name": "Sec-WebSocket-Protocol"
             },
-            "tls": {
+            "multiplex": {
                 "enabled": true,
-                "certificate_path": "${SINGBOX_CONFIG_DIR}/certs/cert.pem",
-                "key_path": "${SINGBOX_CONFIG_DIR}/certs/private.key"
+                "padding": true,
+                "brutal": {
+                    "enabled": true,
+                    "up_mbps": 1000,
+                    "down_mbps": 1000
+                }
             }
         }
     ]
 }
 EOF
     
-    print_info "VMess配置已生成: ${config_file}"
+    print_info "VMess-WS配置已生成: ${config_file}"
 }
 
-# 生成VLESS配置
-generate_vless_config() {
-    local config_file="${SINGBOX_CONFIG_DIR}/vless.json"
+# 生成VLESS-WS-TLS配置
+generate_vless_ws_tls_config() {
+    local config_file="${SINGBOX_CONFIG_DIR}/vless-ws-tls.json"
     
     cat > "${config_file}" << EOF
 {
     "inbounds": [
         {
             "type": "vless",
-            "tag": "vless-in",
+            "tag": "vless-ws-tls-in",
             "listen": "::",
             "listen_port": ${PROTOCOL_PORTS[7]},
             "users": [
                 {
+                    "name": "sing-box",
                     "uuid": "${PROTOCOL_UUIDS[7]}"
                 }
             ],
@@ -959,15 +948,26 @@ generate_vless_config() {
             },
             "tls": {
                 "enabled": true,
+                "min_version": "1.3",
+                "max_version": "1.3",
                 "certificate_path": "${SINGBOX_CONFIG_DIR}/certs/cert.pem",
                 "key_path": "${SINGBOX_CONFIG_DIR}/certs/private.key"
+            },
+            "multiplex": {
+                "enabled": true,
+                "padding": true,
+                "brutal": {
+                    "enabled": true,
+                    "up_mbps": 1000,
+                    "down_mbps": 1000
+                }
             }
         }
     ]
 }
 EOF
     
-    print_info "VLESS配置已生成: ${config_file}"
+    print_info "VLESS-WS-TLS配置已生成: ${config_file}"
 }
 
 # 生成Shadowsocks配置
@@ -981,9 +981,9 @@ generate_shadowsocks_config() {
             "type": "shadowsocks",
             "tag": "shadowsocks-in",
             "listen": "::",
-            "listen_port": ${PROTOCOL_PORTS[8]},
+            "listen_port": ${PROTOCOL_PORTS[4]},
             "method": "2022-blake3-aes-128-gcm",
-            "password": "${PROTOCOL_UUIDS[8]}"
+            "password": "${PROTOCOL_UUIDS[4]}"
         }
     ]
 }
@@ -992,36 +992,7 @@ EOF
     print_info "Shadowsocks配置已生成: ${config_file}"
 }
 
-# 生成Naive配置
-generate_naive_config() {
-    local config_file="${SINGBOX_CONFIG_DIR}/naive.json"
-    
-    cat > "${config_file}" << EOF
-{
-    "inbounds": [
-        {
-            "type": "naive",
-            "tag": "naive-in",
-            "listen": "::",
-            "listen_port": ${PROTOCOL_PORTS[9]},
-            "users": [
-                {
-                    "username": "user",
-                    "password": "${PROTOCOL_UUIDS[9]}"
-                }
-            ],
-            "tls": {
-                "enabled": true,
-                "certificate_path": "${SINGBOX_CONFIG_DIR}/certs/cert.pem",
-                "key_path": "${SINGBOX_CONFIG_DIR}/certs/private.key"
-            }
-        }
-    ]
-}
-EOF
-    
-    print_info "Naive配置已生成: ${config_file}"
-}
+
 
 # 生成H2-Reality配置
 generate_h2_reality_config() {
@@ -1034,10 +1005,10 @@ generate_h2_reality_config() {
             "type": "vless",
             "tag": "h2-reality-in",
             "listen": "::",
-            "listen_port": ${PROTOCOL_PORTS[10]},
+            "listen_port": ${PROTOCOL_PORTS[8]},
             "users": [
                 {
-                    "uuid": "${PROTOCOL_UUIDS[10]}"
+                    "uuid": "${PROTOCOL_UUIDS[8]}"
                 }
             ],
             "tls": {
@@ -1075,10 +1046,10 @@ generate_grpc_reality_config() {
             "type": "vless",
             "tag": "grpc-reality-in",
             "listen": "::",
-            "listen_port": ${PROTOCOL_PORTS[11]},
+            "listen_port": ${PROTOCOL_PORTS[9]},
             "users": [
                 {
-                    "uuid": "${PROTOCOL_UUIDS[11]}"
+                    "uuid": "${PROTOCOL_UUIDS[9]}"
                 }
             ],
             "tls": {
@@ -1117,11 +1088,11 @@ generate_anytls_config() {
             "type": "anytls",
             "tag": "anytls-in",
             "listen": "::",
-            "listen_port": ${PROTOCOL_PORTS[12]},
+            "listen_port": ${PROTOCOL_PORTS[10]},
             "users": [
                 {
                     "name": "user1",
-                    "password": "${PROTOCOL_UUIDS[12]}"
+                    "password": "${PROTOCOL_UUIDS[10]}"
                 }
             ],
             "padding_scheme": [
@@ -1148,54 +1119,7 @@ EOF
     print_info "AnyTLS配置已生成: ${config_file}"
 }
 
-# 生成Direct配置
-generate_direct_config() {
-    local config_file="${SINGBOX_CONFIG_DIR}/direct.json"
-    
-    cat > "${config_file}" << EOF
-{
-    "inbounds": [
-        {
-            "type": "direct",
-            "tag": "direct-in",
-            "listen": "::",
-            "listen_port": ${PROTOCOL_PORTS[13]},
-            "network": "tcp",
-            "override_address": "127.0.0.1",
-            "override_port": 80
-        }
-    ]
-}
-EOF
-    
-    print_info "Direct配置已生成: ${config_file}"
-}
 
-# 生成Mixed配置
-generate_mixed_config() {
-    local config_file="${SINGBOX_CONFIG_DIR}/mixed.json"
-    
-    cat > "${config_file}" << EOF
-{
-    "inbounds": [
-        {
-            "type": "mixed",
-            "tag": "mixed-in",
-            "listen": "::",
-            "listen_port": ${PROTOCOL_PORTS[14]},
-            "users": [
-                {
-                    "username": "user",
-                    "password": "${MIXED_PASSWORD}"
-                }
-            ]
-        }
-    ]
-}
-EOF
-    
-    print_info "Mixed配置已生成: ${config_file}"
-}
 
 # 生成主配置文件
 generate_main_config() {
@@ -1402,7 +1326,7 @@ generate_main_config() {
                 "tag": "geosite-openai",
                 "type": "remote",
                 "format": "binary",
-                "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-openai.srs"
+                "url": "${GH_PROXY}https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-openai.srs"
             }
         ],
         "rules": [
@@ -1476,20 +1400,16 @@ generate_all_configs() {
     
     # 生成各协议配置
     generate_xtls_reality_config
-    generate_vless_reality_config
     generate_hysteria2_config
     generate_tuic_config
     generate_shadowtls_config
-    generate_trojan_config
-    generate_vmess_config
-    generate_vless_config
     generate_shadowsocks_config
-    generate_naive_config
+    generate_trojan_config
+    generate_vmess_ws_config
+    generate_vless_ws_tls_config
     generate_h2_reality_config
     generate_grpc_reality_config
     generate_anytls_config
-    generate_direct_config
-    generate_mixed_config
     
     # 生成主配置
     generate_main_config
@@ -1912,25 +1832,19 @@ generate_vless_ws_link() {
 # 生成Shadowsocks节点链接
 generate_shadowsocks_link() {
     local method="aes-256-gcm"
-    local password="${PROTOCOL_UUIDS[8]}"
-    local port="${PROTOCOL_PORTS[8]}"
+    local password="${PROTOCOL_UUIDS[4]}"
+    local port="${PROTOCOL_PORTS[4]}"
     local auth=$(base64_encode "${method}:${password}")
     
     echo "ss://${auth}@${SERVER_IP}:${port}#Shadowsocks-${SERVER_IP}"
 }
 
-# 生成Naive节点链接
-generate_naive_link() {
-    local uuid="${PROTOCOL_UUIDS[9]}"
-    local port="${PROTOCOL_PORTS[9]}"
-    
-    echo "https://${uuid}:${uuid}@${SERVER_IP}:${port}#Naive-${SERVER_IP}"
-}
+
 
 # 生成H2-Reality节点链接
 generate_h2_reality_link() {
-    local uuid="${PROTOCOL_UUIDS[10]}"
-    local port="${PROTOCOL_PORTS[10]}"
+    local uuid="${PROTOCOL_UUIDS[8]}"
+    local port="${PROTOCOL_PORTS[8]}"
     local sni="www.apple.com"
     local public_key="${REALITY_PUBLIC_KEY}"
     local short_id=""
@@ -1940,8 +1854,8 @@ generate_h2_reality_link() {
 
 # 生成gRPC-Reality节点链接
 generate_grpc_reality_link() {
-    local uuid="${PROTOCOL_UUIDS[11]}"
-    local port="${PROTOCOL_PORTS[11]}"
+    local uuid="${PROTOCOL_UUIDS[9]}"
+    local port="${PROTOCOL_PORTS[9]}"
     local sni="www.cloudflare.com"
     local public_key="${REALITY_PUBLIC_KEY}"
     local short_id=""
@@ -2142,44 +2056,32 @@ show_node_info() {
     echo "$(generate_shadowtls_link)"
     echo
     
-    print_info "5. Trojan:"
-    echo "$(generate_trojan_link)"
-    echo
-    
-    print_info "6. VMess-WS:"
-    echo "$(generate_vmess_link)"
-    echo
-    
-    print_info "7. VLESS-WS:"
-    echo "$(generate_vless_ws_link)"
-    echo
-    
-    print_info "8. Shadowsocks:"
+    print_info "5. Shadowsocks:"
     echo "$(generate_shadowsocks_link)"
     echo
     
-    print_info "9. Naive:"
-    echo "$(generate_naive_link)"
+    print_info "6. Trojan:"
+    echo "$(generate_trojan_link)"
     echo
     
-    print_info "10. H2-Reality:"
+    print_info "7. VMess-WS:"
+    echo "$(generate_vmess_link)"
+    echo
+    
+    print_info "8. VLESS-WS-TLS:"
+    echo "$(generate_vless_ws_link)"
+    echo
+    
+    print_info "9. H2-Reality:"
     echo "$(generate_h2_reality_link)"
     echo
     
-    print_info "11. gRPC-Reality:"
+    print_info "10. gRPC-Reality:"
     echo "$(generate_grpc_reality_link)"
     echo
     
-    print_info "12. AnyTLS:"
-    echo "anytls://user1:${PROTOCOL_UUIDS[12]}@${SERVER_IP}:${PROTOCOL_PORTS[12]}?sni=${SERVER_IP}&allowInsecure=1#AnyTLS-${SERVER_IP}"
-    echo
-    
-    print_info "13. Direct:"
-    echo "direct://${SERVER_IP}:${PROTOCOL_PORTS[13]}#Direct-${SERVER_IP}"
-    echo
-    
-    print_info "14. Mixed:"
-    echo "mixed://user:${MIXED_PASSWORD}@${SERVER_IP}:${PROTOCOL_PORTS[14]}#Mixed-${SERVER_IP}"
+    print_info "11. AnyTLS:"
+    echo "anytls://user1:${PROTOCOL_UUIDS[10]}@${SERVER_IP}:${PROTOCOL_PORTS[10]}?sni=${SERVER_IP}&allowInsecure=1#AnyTLS-${SERVER_IP}"
     echo
     
     print_info "=============================="
@@ -2231,6 +2133,12 @@ main_install() {
     
     # 创建目录
     create_directories
+    
+    # 检测GitHub访问方式
+    if ! detect_github_access; then
+        print_error "无法访问GitHub，安装终止"
+        exit 1
+    fi
     
     # 下载安装 Sing-box
     download_singbox
