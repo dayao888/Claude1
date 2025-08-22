@@ -1260,15 +1260,6 @@ generate_main_config() {
                     "private_key": "${REALITY_PRIVATE_KEY}",
                     "short_id": [""]
                 }
-            },
-            "multiplex": {
-                "enabled": true,
-                "padding": true,
-                "brutal": {
-                    "enabled": true,
-                    "up_mbps": 1000,
-                    "down_mbps": 1000
-                }
             }
         },
         {
@@ -1308,6 +1299,7 @@ generate_main_config() {
             ],
             "tls": {
                 "enabled": true,
+                "alpn": ["h3"],
                 "certificate_path": "${SINGBOX_CONFIG_DIR}/certs/cert.pem",
                 "key_path": "${SINGBOX_CONFIG_DIR}/certs/private.key"
             }
@@ -1336,9 +1328,54 @@ generate_main_config() {
             "tag": "block"
         },
         {
+            "type": "vless",
+            "tag": "xtls-reality-out",
+            "server": "${SERVER_IP}",
+            "server_port": ${PROTOCOL_PORTS[0]},
+            "uuid": "${PROTOCOL_UUIDS[0]}",
+            "flow": "xtls-rprx-vision",
+            "tls": {
+                "enabled": true,
+                "server_name": "${TLS_SERVER_NAME}",
+                "reality": {
+                    "enabled": true,
+                    "public_key": "${REALITY_PUBLIC_KEY}",
+                    "short_id": ""
+                }
+            }
+        },
+        {
+            "type": "vless",
+            "tag": "vless-reality-out",
+            "server": "${SERVER_IP}",
+            "server_port": ${PROTOCOL_PORTS[1]},
+            "uuid": "${PROTOCOL_UUIDS[1]}",
+            "tls": {
+                "enabled": true,
+                "server_name": "${TLS_SERVER_NAME}",
+                "reality": {
+                    "enabled": true,
+                    "public_key": "${REALITY_PUBLIC_KEY}",
+                    "short_id": ""
+                }
+            }
+        },
+        {
+            "type": "hysteria2",
+            "tag": "hysteria2-out",
+            "server": "${SERVER_IP}",
+            "server_port": ${PROTOCOL_PORTS[2]},
+            "password": "${PROTOCOL_UUIDS[2]}",
+            "tls": {
+                "enabled": true,
+                "server_name": "${TLS_SERVER_NAME}",
+                "alpn": ["h3"]
+            }
+        },
+        {
             "type": "selector",
             "tag": "proxy",
-            "outbounds": ["xtls-reality-in", "vless-reality-in", "hysteria2-in", "mixed-in", "direct"]
+            "outbounds": ["xtls-reality-out", "vless-reality-out", "hysteria2-out", "direct"]
         }
     ],
     "route": {
@@ -1396,7 +1433,6 @@ generate_main_config() {
             }
         ],
         "final": "proxy",
-        "default_domain_resolver": "google",
         "auto_detect_interface": true
     }
 }
