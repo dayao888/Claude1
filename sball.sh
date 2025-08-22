@@ -1,4 +1,4 @@
- #!/bin/bash
+#!/bin/bash
 
 # =============================================================================
 # Sing-box 一键安装脚本 (sball.sh)
@@ -1331,7 +1331,8 @@ generate_main_config() {
     "outbounds": [
         {
             "type": "direct",
-            "tag": "direct"
+            "tag": "direct",
+            "domain_strategy": "prefer_ipv4"
         },
         {
             "type": "block",
