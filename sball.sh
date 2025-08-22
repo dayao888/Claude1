@@ -1215,13 +1215,18 @@ generate_main_config() {
         "servers": [
             {
                 "tag": "google",
-                "address": "8.8.8.8",
-                "strategy": "prefer_ipv4"
+                "address": "https://8.8.8.8/dns-query",
+                "address_resolver": "local"
             },
             {
-                "tag": "cloudflare",
-                "address": "1.1.1.1",
-                "strategy": "prefer_ipv4"
+                "tag": "cloudflare", 
+                "address": "https://1.1.1.1/dns-query",
+                "address_resolver": "local"
+            },
+            {
+                "tag": "local",
+                "address": "223.5.5.5",
+                "detour": "direct"
             }
         ],
         "rules": [],
@@ -1244,7 +1249,18 @@ generate_main_config() {
     "route": {
         "rules": [
             {
-                "geoip": "private",
+                "ip_cidr": [
+                    "10.0.0.0/8",
+                    "172.16.0.0/12",
+                    "192.168.0.0/16",
+                    "127.0.0.0/8",
+                    "169.254.0.0/16",
+                    "224.0.0.0/4",
+                    "::1/128",
+                    "fc00::/7",
+                    "fe80::/10",
+                    "ff00::/8"
+                ],
                 "outbound": "direct"
             }
         ],
@@ -1794,7 +1810,14 @@ proxy-groups:
 
 rules:
   - DOMAIN-SUFFIX,cn,DIRECT
-  - GEOIP,CN,DIRECT
+  - IP-CIDR,1.0.1.0/24,DIRECT
+  - IP-CIDR,1.0.2.0/23,DIRECT
+  - IP-CIDR,1.0.8.0/21,DIRECT
+  - IP-CIDR,1.0.32.0/19,DIRECT
+  - IP-CIDR,1.1.0.0/24,DIRECT
+  - IP-CIDR,1.1.8.0/24,DIRECT
+  - IP-CIDR,1.2.0.0/23,DIRECT
+  - IP-CIDR,1.2.4.0/22,DIRECT
   - MATCH,🚀 节点选择
 EOF
 
@@ -1870,11 +1893,27 @@ generate_singbox_client_config() {
   "route": {
     "rules": [
       {
-        "geoip": "cn",
+        "ip_cidr": [
+          "1.0.1.0/24",
+          "1.0.2.0/23",
+          "1.0.8.0/21",
+          "1.0.32.0/19",
+          "1.1.0.0/24",
+          "1.1.8.0/24",
+          "1.2.0.0/23",
+          "1.2.4.0/22"
+        ],
         "outbound": "direct"
       },
       {
-        "geosite": "cn",
+        "domain_suffix": [
+          ".cn",
+          ".com.cn",
+          ".net.cn",
+          ".org.cn",
+          ".gov.cn",
+          ".edu.cn"
+        ],
         "outbound": "direct"
       }
     ],
