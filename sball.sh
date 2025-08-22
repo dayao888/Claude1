@@ -1337,6 +1337,10 @@ generate_main_config() {
             "tls": {
                 "enabled": true,
                 "server_name": "${TLS_SERVER_NAME}",
+                "utls": {
+                    "enabled": true,
+                    "fingerprint": "chrome"
+                },
                 "reality": {
                     "enabled": true,
                     "public_key": "${REALITY_PUBLIC_KEY}",
@@ -1353,6 +1357,10 @@ generate_main_config() {
             "tls": {
                 "enabled": true,
                 "server_name": "${TLS_SERVER_NAME}",
+                "utls": {
+                    "enabled": true,
+                    "fingerprint": "chrome"
+                },
                 "reality": {
                     "enabled": true,
                     "public_key": "${REALITY_PUBLIC_KEY}",
