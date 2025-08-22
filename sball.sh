@@ -1,4 +1,4 @@
-#!/bin/bash
+ #!/bin/bash
 
 # =============================================================================
 # Sing-box 一键安装脚本 (sball.sh)
@@ -1235,6 +1235,18 @@ generate_main_config() {
         "disable_cache": false,
         "disable_expire": false
     },
+    "experimental": {
+        "cache_file": {
+            "enabled": true,
+            "path": "${SINGBOX_DATA_DIR}/cache.db"
+        }
+    },
+    "ntp": {
+        "enabled": true,
+        "server": "time.apple.com",
+        "server_port": 123,
+        "interval": "60m"
+    },
     "inbounds": [
         {
             "type": "vless",
@@ -1385,9 +1397,31 @@ generate_main_config() {
         }
     ],
     "route": {
+        "rule_set": [
+            {
+                "tag": "geosite-openai",
+                "type": "remote",
+                "format": "binary",
+                "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-openai.srs"
+            }
+        ],
         "rules": [
             {
                 "action": "sniff"
+            },
+            {
+                "action": "resolve",
+                "domain": [
+                    "api.openai.com"
+                ],
+                "strategy": "prefer_ipv4"
+            },
+            {
+                "action": "resolve",
+                "rule_set": [
+                    "geosite-openai"
+                ],
+                "strategy": "prefer_ipv6"
             },
             {
                 "ip_cidr": [
@@ -1404,7 +1438,15 @@ generate_main_config() {
                 ],
                 "outbound": "direct"
             },
-
+            {
+                "domain": [
+                    "api.openai.com"
+                ],
+                "rule_set": [
+                    "geosite-openai"
+                ],
+                "outbound": "proxy"
+            },
             {
                 "domain_suffix": [
                     ".cn",
