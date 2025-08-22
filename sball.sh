@@ -689,6 +689,10 @@ generate_xtls_reality_config() {
             "tls": {
                 "enabled": true,
                 "server_name": "${TLS_SERVER_NAME}",
+                "utls": {
+                    "enabled": true,
+                    "fingerprint": "chrome"
+                },
                 "reality": {
                     "enabled": true,
                     "handshake": {
@@ -1232,7 +1236,6 @@ generate_main_config() {
         ],
         "rules": [],
         "final": "google",
-        "strategy": "prefer_ipv4",
         "disable_cache": false,
         "disable_expire": false
     },
@@ -1276,6 +1279,10 @@ generate_main_config() {
             "tls": {
                 "enabled": true,
                 "server_name": "${TLS_SERVER_NAME}",
+                "utls": {
+                    "enabled": true,
+                    "fingerprint": "chrome"
+                },
                 "reality": {
                     "enabled": true,
                     "handshake": {
@@ -1320,8 +1327,7 @@ generate_main_config() {
     "outbounds": [
         {
             "type": "direct",
-            "tag": "direct",
-            "domain_strategy": "prefer_ipv4"
+            "tag": "direct"
         },
         {
             "type": "block",
@@ -1387,20 +1393,6 @@ generate_main_config() {
         }
     ],
     "route": {
-        "rule_set": [
-            {
-                "tag": "geosite-cn",
-                "type": "remote",
-                "format": "binary",
-                "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs"
-            },
-            {
-                "tag": "geoip-cn",
-                "type": "remote",
-                "format": "binary",
-                "url": "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs"
-            }
-        ],
         "rules": [
             {
                 "action": "sniff"
@@ -1420,14 +1412,7 @@ generate_main_config() {
                 ],
                 "outbound": "direct"
             },
-            {
-                "rule_set": ["geosite-cn"],
-                "outbound": "direct"
-            },
-            {
-                "rule_set": ["geoip-cn"],
-                "outbound": "direct"
-            },
+
             {
                 "domain_suffix": [
                     ".cn",
@@ -1441,6 +1426,7 @@ generate_main_config() {
             }
         ],
         "final": "proxy",
+        "default_domain_resolver": "google",
         "auto_detect_interface": true
     }
 }
