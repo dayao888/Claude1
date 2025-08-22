@@ -1236,14 +1236,14 @@ generate_main_config() {
         "final": "google",
         "strategy": "prefer_ipv4",
         "disable_cache": false,
-        "disable_expire": false,
-        "default_domain_resolver": "local"
+        "disable_expire": false
     },
     "inbounds": [],
     "outbounds": [
         {
             "type": "direct",
-            "tag": "direct"
+            "tag": "direct",
+            "domain_strategy": "prefer_ipv4"
         },
         {
             "type": "block",
