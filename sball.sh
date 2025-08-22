@@ -1214,18 +1214,21 @@ generate_main_config() {
     "dns": {
         "servers": [
             {
+                "type": "https",
                 "tag": "google",
-                "address": "https://8.8.8.8/dns-query",
-                "address_resolver": "local"
+                "server": "8.8.8.8",
+                "domain_resolver": "local"
             },
             {
+                "type": "https",
                 "tag": "cloudflare", 
-                "address": "https://1.1.1.1/dns-query",
-                "address_resolver": "local"
+                "server": "1.1.1.1",
+                "domain_resolver": "local"
             },
             {
+                "type": "udp",
                 "tag": "local",
-                "address": "223.5.5.5",
+                "server": "223.5.5.5",
                 "detour": "direct"
             }
         ],
@@ -1244,10 +1247,32 @@ generate_main_config() {
         {
             "type": "block",
             "tag": "block"
+        },
+        {
+            "type": "selector",
+            "tag": "proxy",
+            "outbounds": ["direct"]
         }
     ],
     "route": {
+        "rule_set": [
+            {
+                "tag": "geosite-cn",
+                "type": "remote",
+                "format": "binary",
+                "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs"
+            },
+            {
+                "tag": "geoip-cn",
+                "type": "remote",
+                "format": "binary",
+                "url": "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs"
+            }
+        ],
         "rules": [
+            {
+                "action": "sniff"
+            },
             {
                 "ip_cidr": [
                     "10.0.0.0/8",
@@ -1262,9 +1287,28 @@ generate_main_config() {
                     "ff00::/8"
                 ],
                 "outbound": "direct"
+            },
+            {
+                "rule_set": ["geosite-cn"],
+                "outbound": "direct"
+            },
+            {
+                "rule_set": ["geoip-cn"],
+                "outbound": "direct"
+            },
+            {
+                "domain_suffix": [
+                    ".cn",
+                    ".com.cn",
+                    ".net.cn",
+                    ".org.cn",
+                    ".gov.cn",
+                    ".edu.cn"
+                ],
+                "outbound": "direct"
             }
         ],
-        "final": "direct",
+        "final": "proxy",
         "auto_detect_interface": true
     }
 }
@@ -1835,11 +1879,12 @@ generate_singbox_client_config() {
   "dns": {
     "servers": [
       {
+        "type": "udp",
         "tag": "google",
-        "address": "8.8.8.8"
+        "server": "8.8.8.8"
       }
     ]
-  },
+  }
   "inbounds": [
     {
       "type": "mixed",
