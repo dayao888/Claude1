@@ -1226,8 +1226,7 @@ generate_main_config() {
             {
                 "type": "udp",
                 "tag": "local",
-                "server": "223.5.5.5",
-                "detour": "direct"
+                "server": "223.5.5.5"
             }
         ],
         "rules": [],
@@ -1414,15 +1413,13 @@ generate_main_config() {
                 "action": "resolve",
                 "domain": [
                     "api.openai.com"
-                ],
-                "strategy": "prefer_ipv4"
+                ]
             },
             {
                 "action": "resolve",
                 "rule_set": [
                     "geosite-openai"
-                ],
-                "strategy": "prefer_ipv6"
+                ]
             },
             {
                 "ip_cidr": [
