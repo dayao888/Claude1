@@ -382,15 +382,16 @@ check_required_tools() {
 download_singbox() {
     print_info "$(get_text 'download_singbox')"
     
-    local download_url="${GH_PROXY}https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-linux-${ARCH}.tar.gz"
+    # Sing-box 使用直链下载（不使用代理）
+    local download_url="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-linux-${ARCH}.tar.gz"
     local temp_dir="/tmp/sing-box-install"
     local archive_file="${temp_dir}/sing-box.tar.gz"
     
     # 创建临时目录
     mkdir -p "${temp_dir}"
     
-    # 下载文件
-    print_info "正在从 GitHub 下载 Sing-box ${SINGBOX_VERSION}..."
+    # 下载文件（使用直链，不使用代理）
+    print_info "正在从 GitHub 直链下载 Sing-box ${SINGBOX_VERSION}..."
     if ! curl -L --progress-bar "${download_url}" -o "${archive_file}"; then
         print_error "下载 Sing-box 失败"
         rm -rf "${temp_dir}"
@@ -1124,6 +1125,21 @@ EOF
 generate_main_config() {
     print_info "$(get_text 'generate_config')"
     
+    # 创建规则集目录并下载文件
+    local rules_dir="${SINGBOX_CONFIG_DIR}/rules"
+    mkdir -p "${rules_dir}"
+    
+    print_info "正在下载规则集文件..."
+    # 规则集使用代理下载
+    print_info "规则集使用代理下载: ${GH_PROXY}"
+    if ! wget -q -O "${rules_dir}/geosite-openai.srs" "${GH_PROXY}https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-openai.srs"; then
+        print_warning "规则集下载失败，将使用简化配置"
+        RULESET_AVAILABLE=false
+    else
+        print_success "规则集下载成功"
+        RULESET_AVAILABLE=true
+    fi
+    
     local config_file="${SINGBOX_CONFIG_DIR}/config.json"
     
     cat > "${config_file}" << EOF
@@ -1308,14 +1324,23 @@ generate_main_config() {
         }
     ],
     "route": {
+EOF
+
+    # 根据规则集可用性添加rule_set配置
+    if [[ "${RULESET_AVAILABLE}" == "true" ]]; then
+        cat >> "${config_file}" << 'EOF'
         "rule_set": [
             {
                 "tag": "geosite-openai",
-                "type": "remote",
+                "type": "local",
                 "format": "binary",
-                "url": "${GH_PROXY}https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-openai.srs"
+                "path": "/etc/sing-box/rules/geosite-openai.srs"
             }
         ],
+EOF
+    fi
+    
+    cat >> "${config_file}" << 'EOF'
         "rules": [
             {
                 "action": "sniff"
@@ -1326,12 +1351,21 @@ generate_main_config() {
                     "api.openai.com"
                 ]
             },
+EOF
+
+    # 根据规则集可用性添加resolve规则
+    if [[ "${RULESET_AVAILABLE}" == "true" ]]; then
+        cat >> "${config_file}" << 'EOF'
             {
                 "action": "resolve",
                 "rule_set": [
                     "geosite-openai"
                 ]
             },
+EOF
+    fi
+    
+    cat >> "${config_file}" << 'EOF'
             {
                 "ip_cidr": [
                     "10.0.0.0/8",
@@ -1347,6 +1381,11 @@ generate_main_config() {
                 ],
                 "outbound": "direct"
             },
+EOF
+
+    # 根据规则集可用性添加proxy规则
+    if [[ "${RULESET_AVAILABLE}" == "true" ]]; then
+        cat >> "${config_file}" << 'EOF'
             {
                 "domain": [
                     "api.openai.com"
@@ -1356,6 +1395,20 @@ generate_main_config() {
                 ],
                 "outbound": "proxy"
             },
+EOF
+    else
+        # 如果没有规则集，只使用域名规则
+        cat >> "${config_file}" << 'EOF'
+            {
+                "domain": [
+                    "api.openai.com"
+                ],
+                "outbound": "proxy"
+            },
+EOF
+    fi
+    
+    cat >> "${config_file}" << 'EOF'
             {
                 "domain_suffix": [
                     ".cn",
@@ -2143,7 +2196,7 @@ main_install() {
     generate_all_client_configs
     
     print_success "$(get_text 'install_success')"
-    print_info "所有15种协议配置已生成完成"
+    print_info "所有11种协议配置已生成完成"
     
     # 启动服务
     print_info "正在启动 Sing-box 服务..."
