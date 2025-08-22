@@ -1216,14 +1216,12 @@ generate_main_config() {
             {
                 "type": "https",
                 "tag": "google",
-                "server": "8.8.8.8",
-                "domain_resolver": "local"
+                "server": "8.8.8.8"
             },
             {
                 "type": "https",
                 "tag": "cloudflare", 
-                "server": "1.1.1.1",
-                "domain_resolver": "local"
+                "server": "1.1.1.1"
             },
             {
                 "type": "udp",
@@ -1238,7 +1236,95 @@ generate_main_config() {
         "disable_cache": false,
         "disable_expire": false
     },
-    "inbounds": [],
+    "inbounds": [
+        {
+            "type": "vless",
+            "tag": "xtls-reality-in",
+            "listen": "::",
+            "listen_port": ${PROTOCOL_PORTS[0]},
+            "users": [
+                {
+                    "uuid": "${PROTOCOL_UUIDS[0]}",
+                    "flow": "xtls-rprx-vision"
+                }
+            ],
+            "tls": {
+                "enabled": true,
+                "server_name": "${TLS_SERVER_NAME}",
+                "reality": {
+                    "enabled": true,
+                    "handshake": {
+                        "server": "${TLS_SERVER_NAME}",
+                        "server_port": ${REALITY_HANDSHAKE_PORT}
+                    },
+                    "private_key": "${REALITY_PRIVATE_KEY}",
+                    "short_id": [""]
+                }
+            },
+            "multiplex": {
+                "enabled": true,
+                "padding": true,
+                "brutal": {
+                    "enabled": true,
+                    "up_mbps": 1000,
+                    "down_mbps": 1000
+                }
+            }
+        },
+        {
+            "type": "vless",
+            "tag": "vless-reality-in",
+            "listen": "::",
+            "listen_port": ${PROTOCOL_PORTS[1]},
+            "users": [
+                {
+                    "uuid": "${PROTOCOL_UUIDS[1]}",
+                    "flow": ""
+                }
+            ],
+            "tls": {
+                "enabled": true,
+                "server_name": "${TLS_SERVER_NAME}",
+                "reality": {
+                    "enabled": true,
+                    "handshake": {
+                        "server": "${TLS_SERVER_NAME}",
+                        "server_port": ${REALITY_HANDSHAKE_PORT}
+                    },
+                    "private_key": "${REALITY_PRIVATE_KEY}",
+                    "short_id": [""]
+                }
+            }
+        },
+        {
+            "type": "hysteria2",
+            "tag": "hysteria2-in",
+            "listen": "::",
+            "listen_port": ${PROTOCOL_PORTS[2]},
+            "users": [
+                {
+                    "password": "${PROTOCOL_UUIDS[2]}"
+                }
+            ],
+            "tls": {
+                "enabled": true,
+                "certificate_path": "${SINGBOX_CONFIG_DIR}/certs/cert.pem",
+                "key_path": "${SINGBOX_CONFIG_DIR}/certs/private.key"
+            }
+        },
+        {
+            "type": "mixed",
+            "tag": "mixed-in",
+            "listen": "::",
+            "listen_port": ${PROTOCOL_PORTS[14]},
+            "users": [
+                {
+                    "username": "user",
+                    "password": "${MIXED_PASSWORD}"
+                }
+            ]
+        }
+    ],
     "outbounds": [
         {
             "type": "direct",
@@ -1252,7 +1338,7 @@ generate_main_config() {
         {
             "type": "selector",
             "tag": "proxy",
-            "outbounds": ["direct"]
+            "outbounds": ["xtls-reality-in", "vless-reality-in", "hysteria2-in", "mixed-in", "direct"]
         }
     ],
     "route": {
@@ -1310,6 +1396,7 @@ generate_main_config() {
             }
         ],
         "final": "proxy",
+        "default_domain_resolver": "google",
         "auto_detect_interface": true
     }
 }
