@@ -676,7 +676,6 @@ generate_protocol_variables() {
     TROJAN_PASSWORD=$(generate_random_string 16)
     VMESS_WS_PATH=$(generate_random_string 8)
     VLESS_WS_PATH=$(generate_random_string 8)
-    MIXED_PASSWORD=$(generate_random_string 16)
     
     # Reality 密钥对生成
     local reality_keys=$("${SINGBOX_BINARY}" generate reality-keypair)
@@ -1237,18 +1236,6 @@ generate_main_config() {
                 "certificate_path": "${SINGBOX_CONFIG_DIR}/certs/cert.pem",
                 "key_path": "${SINGBOX_CONFIG_DIR}/certs/private.key"
             }
-        },
-        {
-            "type": "mixed",
-            "tag": "mixed-in",
-            "listen": "::",
-            "listen_port": ${PROTOCOL_PORTS[14]},
-            "users": [
-                {
-                    "username": "user",
-                    "password": "${MIXED_PASSWORD}"
-                }
-            ]
         }
     ],
     "outbounds": [
