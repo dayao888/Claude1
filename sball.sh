@@ -1126,19 +1126,7 @@ generate_main_config() {
     print_info "$(get_text 'generate_config')"
     
     # 创建规则集目录并下载文件
-    local rules_dir="${SINGBOX_CONFIG_DIR}/rules"
-    mkdir -p "${rules_dir}"
-    
-    print_info "正在下载规则集文件..."
-    # 规则集使用代理下载
-    print_info "规则集使用代理下载: ${GH_PROXY}"
-    if ! wget -q -O "${rules_dir}/geosite-openai.srs" "${GH_PROXY}https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-openai.srs"; then
-        print_warning "规则集下载失败，将使用简化配置"
-        RULESET_AVAILABLE=false
-    else
-        print_success "规则集下载成功"
-        RULESET_AVAILABLE=true
-    fi
+    print_info "使用远程规则集配置，无需预下载文件"
     
     local config_file="${SINGBOX_CONFIG_DIR}/config.json"
     
@@ -1326,19 +1314,17 @@ generate_main_config() {
     "route": {
 EOF
 
-    # 根据规则集可用性添加rule_set配置
-    if [[ "${RULESET_AVAILABLE}" == "true" ]]; then
-        cat >> "${config_file}" << 'EOF'
+    # 使用remote类型规则集，避免本地文件依赖
+    cat >> "${config_file}" << 'EOF'
         "rule_set": [
             {
                 "tag": "geosite-openai",
-                "type": "local",
+                "type": "remote",
                 "format": "binary",
-                "path": "/etc/sing-box/rules/geosite-openai.srs"
+                "url": "https://ghproxy.com/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-openai.srs"
             }
         ],
 EOF
-    fi
     
     cat >> "${config_file}" << 'EOF'
         "rules": [
@@ -1353,9 +1339,8 @@ EOF
             },
 EOF
 
-    # 根据规则集可用性添加resolve规则
-    if [[ "${RULESET_AVAILABLE}" == "true" ]]; then
-        cat >> "${config_file}" << 'EOF'
+    # 添加规则集resolve规则
+    cat >> "${config_file}" << 'EOF'
             {
                 "action": "resolve",
                 "rule_set": [
@@ -1363,7 +1348,6 @@ EOF
                 ]
             },
 EOF
-    fi
     
     cat >> "${config_file}" << 'EOF'
             {
@@ -1383,9 +1367,8 @@ EOF
             },
 EOF
 
-    # 根据规则集可用性添加proxy规则
-    if [[ "${RULESET_AVAILABLE}" == "true" ]]; then
-        cat >> "${config_file}" << 'EOF'
+    # 添加规则集proxy规则
+    cat >> "${config_file}" << 'EOF'
             {
                 "domain": [
                     "api.openai.com"
@@ -1396,17 +1379,6 @@ EOF
                 "outbound": "proxy"
             },
 EOF
-    else
-        # 如果没有规则集，只使用域名规则
-        cat >> "${config_file}" << 'EOF'
-            {
-                "domain": [
-                    "api.openai.com"
-                ],
-                "outbound": "proxy"
-            },
-EOF
-    fi
     
     cat >> "${config_file}" << 'EOF'
             {
