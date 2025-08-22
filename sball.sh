@@ -689,10 +689,6 @@ generate_xtls_reality_config() {
             "tls": {
                 "enabled": true,
                 "server_name": "${TLS_SERVER_NAME}",
-                "utls": {
-                    "enabled": true,
-                    "fingerprint": "chrome"
-                },
                 "reality": {
                     "enabled": true,
                     "handshake": {
@@ -1279,10 +1275,6 @@ generate_main_config() {
             "tls": {
                 "enabled": true,
                 "server_name": "${TLS_SERVER_NAME}",
-                "utls": {
-                    "enabled": true,
-                    "fingerprint": "chrome"
-                },
                 "reality": {
                     "enabled": true,
                     "handshake": {
