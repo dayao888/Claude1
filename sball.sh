@@ -1321,7 +1321,8 @@ EOF
                 "tag": "geosite-openai",
                 "type": "remote",
                 "format": "binary",
-                "url": "https://ghproxy.com/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-openai.srs"
+                "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-openai.srs",
+                "download_detour": "direct"
             }
         ],
 EOF
