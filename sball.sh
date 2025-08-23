@@ -976,6 +976,15 @@ EOF
 generate_shadowsocks_config() {
     local config_file="${SINGBOX_CONFIG_DIR}/shadowsocks.json"
     
+    # 生成Shadowsocks 2022-blake3-aes-128-gcm专用的16字节base64密码
+    local shadowsocks_password
+    if command -v "${SINGBOX_BINARY}" >/dev/null 2>&1; then
+        shadowsocks_password=$("${SINGBOX_BINARY}" generate rand --base64 16)
+    else
+        # 备用方法：生成16字节随机数据并base64编码
+        shadowsocks_password=$(openssl rand -base64 16)
+    fi
+    
     cat > "${config_file}" << EOF
 {
     "inbounds": [
@@ -985,13 +994,17 @@ generate_shadowsocks_config() {
             "listen": "::",
             "listen_port": ${PROTOCOL_PORTS[4]},
             "method": "2022-blake3-aes-128-gcm",
-            "password": "${PROTOCOL_UUIDS[4]}"
+            "password": "${shadowsocks_password}"
         }
     ]
 }
 EOF
     
+    # 保存密码供后续使用
+    SHADOWSOCKS_PASSWORD="${shadowsocks_password}"
+    
     print_info "Shadowsocks配置已生成: ${config_file}"
+    print_debug "Shadowsocks密码: ${shadowsocks_password}"
 }
 
 
@@ -1268,7 +1281,7 @@ generate_main_config() {
             "listen": "::",
             "listen_port": ${PROTOCOL_PORTS[4]},
             "method": "2022-blake3-aes-128-gcm",
-            "password": "${PROTOCOL_UUIDS[4]}"
+            "password": "${SHADOWSOCKS_PASSWORD}"
         },
         {
             "type": "trojan",
@@ -1484,7 +1497,7 @@ generate_main_config() {
             "server": "${SERVER_IP}",
             "server_port": ${PROTOCOL_PORTS[4]},
             "method": "2022-blake3-aes-128-gcm",
-            "password": "${PROTOCOL_UUIDS[4]}"
+            "password": "${SHADOWSOCKS_PASSWORD}"
         },
         {
             "type": "trojan",
@@ -1592,18 +1605,7 @@ generate_main_config() {
     "route": {
 EOF
 
-    # 使用remote类型规则集，避免本地文件依赖
-    cat >> "${config_file}" << 'EOF'
-        "rule_set": [
-            {
-                "tag": "geosite-openai",
-                "type": "remote",
-                "format": "binary",
-                "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-openai.srs",
-                "download_detour": "direct"
-            }
-        ],
-EOF
+    # 移除rule-set配置，使用简化的路由规则
     
     cat >> "${config_file}" << 'EOF'
         "rules": [
@@ -1618,15 +1620,7 @@ EOF
             },
 EOF
 
-    # 添加规则集resolve规则
-    cat >> "${config_file}" << 'EOF'
-            {
-                "action": "resolve",
-                "rule_set": [
-                    "geosite-openai"
-                ]
-            },
-EOF
+    # 移除rule-set resolve规则
     
     cat >> "${config_file}" << 'EOF'
             {
@@ -1646,14 +1640,14 @@ EOF
             },
 EOF
 
-    # 添加规则集proxy规则
+    # 使用简化的域名规则替代rule-set
     cat >> "${config_file}" << 'EOF'
             {
                 "domain": [
-                    "api.openai.com"
-                ],
-                "rule_set": [
-                    "geosite-openai"
+                    "api.openai.com",
+                    "openai.com",
+                    "chat.openai.com",
+                    "platform.openai.com"
                 ],
                 "outbound": "proxy"
             },
@@ -2122,13 +2116,12 @@ generate_vless_ws_link() {
 
 # 生成Shadowsocks节点链接
 generate_shadowsocks_link() {
-    local method="aes-256-gcm"
-    local password="${PROTOCOL_UUIDS[4]}"
+    local method="2022-blake3-aes-128-gcm"
+    local password="${SHADOWSOCKS_PASSWORD}"
     local port="${PROTOCOL_PORTS[4]}"
     local auth=$(base64_encode "${method}:${password}")
     
     echo "ss://${auth}@${SERVER_IP}:${port}#Shadowsocks-${SERVER_IP}"
-}
 
 
 
