@@ -114,7 +114,17 @@ error() { echo -e "\033[31m\033[01m$*\033[0m" && exit 1; }
 info() { echo -e "\033[32m\033[01m$*\033[0m"; }
 hint() { echo -e "\033[33m\033[01m$*\033[0m"; }
 reading() { read -rp "$(info "$1")" "$2"; }
-text() { grep -q '\$' <<< "${E[$*]}" && eval echo "\$(eval echo "\${${L}[$*]}")" || eval echo "\${${L}[$*]}"; }
+text() { 
+    local key="$*"
+    local lang_var="${L}[$key]"
+    local content
+    if [[ "${!lang_var}" =~ \$ ]]; then
+        content=$(eval echo "${!lang_var}")
+        echo "$content"
+    else
+        echo "${!lang_var}"
+    fi
+}
 
 # 选择语言
 select_language() {
