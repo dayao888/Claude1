@@ -278,16 +278,16 @@ generate_consecutive_ports() {
         if [[ "${all_available}" == "true" ]]; then
             # 分配端口给各协议
             PROTOCOL_PORTS[0]=$((port))      # xtls-reality
-            PROTOCOL_PORTS[1]=$((port + 1))  # hysteria2
-            PROTOCOL_PORTS[2]=$((port + 2))  # tuic
-            PROTOCOL_PORTS[3]=$((port + 3))  # shadowtls
+            PROTOCOL_PORTS[1]=$((port + 1))  # vless-reality  
+            PROTOCOL_PORTS[2]=$((port + 2))  # hysteria2
+            PROTOCOL_PORTS[3]=$((port + 3))  # tuic
             PROTOCOL_PORTS[4]=$((port + 4))  # shadowsocks
             PROTOCOL_PORTS[5]=$((port + 5))  # trojan
             PROTOCOL_PORTS[6]=$((port + 6))  # vmess-ws
             PROTOCOL_PORTS[7]=$((port + 7))  # vless-ws-tls
             PROTOCOL_PORTS[8]=$((port + 8))  # h2-reality
             PROTOCOL_PORTS[9]=$((port + 9))  # grpc-reality
-            PROTOCOL_PORTS[10]=$((port + 10)) # anytls
+            PROTOCOL_PORTS[10]=$((port + 10)) # shadowtls
             
             print_success "已分配端口范围: ${port}-$((port + needed_ports - 1))"
             return 0
@@ -1386,7 +1386,7 @@ generate_main_config() {
             "type": "shadowtls",
             "tag": "shadowtls-in",
             "listen": "::",
-            "listen_port": ${PROTOCOL_PORTS[11]},
+            "listen_port": ${PROTOCOL_PORTS[10]},
             "version": 3,
             "users": [
                 {
@@ -1575,7 +1575,7 @@ generate_main_config() {
             "type": "shadowtls",
             "tag": "shadowtls-out",
             "server": "${SERVER_IP}",
-            "server_port": ${PROTOCOL_PORTS[11]},
+            "server_port": ${PROTOCOL_PORTS[10]},
             "version": 3,
             "password": "${SHADOWTLS_PASSWORD}",
             "tls": {
@@ -2097,7 +2097,7 @@ generate_tuic_link() {
 # 生成ShadowTLS节点链接
 generate_shadowtls_link() {
     local password="${SHADOWTLS_PASSWORD}"
-    local port="${PROTOCOL_PORTS[4]}"
+    local port="${PROTOCOL_PORTS[10]}"
     local sni="www.microsoft.com"
     
     echo "shadowtls://${password}@${SERVER_IP}:${port}?version=3&sni=${sni}&strict=true#ShadowTLS-v3-${SERVER_IP}"
