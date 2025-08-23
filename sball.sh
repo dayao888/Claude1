@@ -683,6 +683,9 @@ generate_protocol_variables() {
     REALITY_PRIVATE_KEY=$(echo "${reality_keys}" | grep "PrivateKey:" | awk '{print $2}')
     REALITY_PUBLIC_KEY=$(echo "${reality_keys}" | grep "PublicKey:" | awk '{print $2}')
     
+    # Reality shortId生成 (8位随机十六进制字符串)
+    REALITY_SHORT_ID=$(openssl rand -hex 4)
+    
     # TLS服务器配置
     TLS_SERVER_NAME="www.microsoft.com"
     
@@ -704,7 +707,7 @@ generate_xtls_reality_config() {
             "users": [
                 {
                     "uuid": "${PROTOCOL_UUIDS[0]}",
-                    "flow": "xtls-rprx-vision"
+                    "flow": ""
                 }
             ],
             "tls": {
@@ -717,7 +720,7 @@ generate_xtls_reality_config() {
                         "server_port": ${REALITY_HANDSHAKE_PORT}
                     },
                     "private_key": "${REALITY_PRIVATE_KEY}",
-                    "short_id": [""]
+                    "short_id": ["${REALITY_SHORT_ID}"]
                 }
             },
             "multiplex": {
@@ -753,7 +756,7 @@ generate_hysteria2_config() {
             "listen_port": ${PROTOCOL_PORTS[2]},
             "users": [
                 {
-                    "password": "${PROTOCOL_UUIDS[2]}"
+                    "password": "${HYSTERIA2_PASSWORD}"
                 }
             ],
             "ignore_client_bandwidth": false,
@@ -791,7 +794,6 @@ generate_tuic_config() {
             "listen_port": ${PROTOCOL_PORTS[3]},
             "users": [
                 {
-                    "uuid": "${PROTOCOL_UUIDS[3]}",
                     "password": "${TUIC_PASSWORD}"
                 }
             ],
@@ -1021,7 +1023,7 @@ generate_h2_reality_config() {
                         "server_port": ${REALITY_HANDSHAKE_PORT}
                     },
                     "private_key": "${REALITY_PRIVATE_KEY}",
-                    "short_id": [""]
+                    "short_id": ["${REALITY_SHORT_ID}"]
                 }
             },
             "transport": {
@@ -1062,7 +1064,7 @@ generate_grpc_reality_config() {
                         "server_port": ${REALITY_HANDSHAKE_PORT}
                     },
                     "private_key": "${REALITY_PRIVATE_KEY}",
-                    "short_id": [""]
+                    "short_id": ["${REALITY_SHORT_ID}"]
                 }
             },
             "transport": {
@@ -1231,7 +1233,7 @@ generate_main_config() {
             "listen_port": ${PROTOCOL_PORTS[2]},
             "users": [
                 {
-                    "password": "${PROTOCOL_UUIDS[2]}"
+                    "password": "${HYSTERIA2_PASSWORD}"
                 }
             ],
             "tls": {
@@ -1240,6 +1242,163 @@ generate_main_config() {
                 "certificate_path": "${SINGBOX_CONFIG_DIR}/certs/cert.pem",
                 "key_path": "${SINGBOX_CONFIG_DIR}/certs/private.key"
             }
+        },
+        {
+            "type": "tuic",
+            "tag": "tuic-in",
+            "listen": "::",
+            "listen_port": ${PROTOCOL_PORTS[3]},
+            "users": [
+                {
+                    "uuid": "${PROTOCOL_UUIDS[3]}",
+                    "password": "${TUIC_PASSWORD}"
+                }
+            ],
+            "congestion_control": "bbr",
+            "tls": {
+                "enabled": true,
+                "alpn": ["h3"],
+                "certificate_path": "${SINGBOX_CONFIG_DIR}/certs/cert.pem",
+                "key_path": "${SINGBOX_CONFIG_DIR}/certs/private.key"
+            }
+        },
+        {
+            "type": "shadowsocks",
+            "tag": "shadowsocks-in",
+            "listen": "::",
+            "listen_port": ${PROTOCOL_PORTS[4]},
+            "method": "2022-blake3-aes-128-gcm",
+            "password": "${PROTOCOL_UUIDS[4]}"
+        },
+        {
+            "type": "trojan",
+            "tag": "trojan-in",
+            "listen": "::",
+            "listen_port": ${PROTOCOL_PORTS[5]},
+            "users": [
+                {
+                    "password": "${TROJAN_PASSWORD}"
+                }
+            ],
+            "tls": {
+                "enabled": true,
+                "certificate_path": "${SINGBOX_CONFIG_DIR}/certs/cert.pem",
+                "key_path": "${SINGBOX_CONFIG_DIR}/certs/private.key"
+            }
+        },
+        {
+            "type": "vmess",
+            "tag": "vmess-ws-in",
+            "listen": "::",
+            "listen_port": ${PROTOCOL_PORTS[6]},
+            "users": [
+                {
+                    "uuid": "${PROTOCOL_UUIDS[6]}",
+                    "alterId": 0
+                }
+            ],
+            "transport": {
+                "type": "ws",
+                "path": "/${VMESS_WS_PATH}",
+                "max_early_data": 2048,
+                "early_data_header_name": "Sec-WebSocket-Protocol"
+            }
+        },
+        {
+            "type": "vless",
+            "tag": "vless-ws-tls-in",
+            "listen": "::",
+            "listen_port": ${PROTOCOL_PORTS[7]},
+            "users": [
+                {
+                    "name": "sing-box",
+                    "uuid": "${PROTOCOL_UUIDS[7]}"
+                }
+            ],
+            "transport": {
+                "type": "ws",
+                "path": "/${VLESS_WS_PATH}",
+                "max_early_data": 2048,
+                "early_data_header_name": "Sec-WebSocket-Protocol"
+            },
+            "tls": {
+                "enabled": true,
+                "certificate_path": "${SINGBOX_CONFIG_DIR}/certs/cert.pem",
+                "key_path": "${SINGBOX_CONFIG_DIR}/certs/private.key"
+            }
+        },
+        {
+            "type": "vless",
+            "tag": "h2-reality-in",
+            "listen": "::",
+            "listen_port": ${PROTOCOL_PORTS[8]},
+            "users": [
+                {
+                    "uuid": "${PROTOCOL_UUIDS[8]}"
+                }
+            ],
+            "tls": {
+                "enabled": true,
+                "server_name": "${TLS_SERVER_NAME}",
+                "reality": {
+                    "enabled": true,
+                    "handshake": {
+                        "server": "${TLS_SERVER_NAME}",
+                        "server_port": ${REALITY_HANDSHAKE_PORT}
+                    },
+                    "private_key": "${REALITY_PRIVATE_KEY}",
+                    "short_id": [""]
+                }
+            },
+            "transport": {
+                "type": "http"
+            }
+        },
+        {
+            "type": "vless",
+            "tag": "grpc-reality-in",
+            "listen": "::",
+            "listen_port": ${PROTOCOL_PORTS[9]},
+            "users": [
+                {
+                    "uuid": "${PROTOCOL_UUIDS[9]}"
+                }
+            ],
+            "tls": {
+                "enabled": true,
+                "server_name": "${TLS_SERVER_NAME}",
+                "reality": {
+                    "enabled": true,
+                    "handshake": {
+                        "server": "${TLS_SERVER_NAME}",
+                        "server_port": ${REALITY_HANDSHAKE_PORT}
+                    },
+                    "private_key": "${REALITY_PRIVATE_KEY}",
+                    "short_id": [""]
+                }
+            },
+            "transport": {
+                "type": "grpc",
+                "service_name": "grpc"
+            }
+        },
+        {
+            "type": "shadowtls",
+            "tag": "shadowtls-in",
+            "listen": "::",
+            "listen_port": ${PROTOCOL_PORTS[11]},
+            "version": 3,
+            "users": [
+                {
+                    "name": "user1",
+                    "password": "${SHADOWTLS_PASSWORD}"
+                }
+            ],
+            "handshake": {
+                "server": "${TLS_SERVER_NAME}",
+                "server_port": 443
+            },
+            "strict_mode": true
         }
     ],
     "outbounds": [
@@ -1258,7 +1417,7 @@ generate_main_config() {
             "server": "${SERVER_IP}",
             "server_port": ${PROTOCOL_PORTS[0]},
             "uuid": "${PROTOCOL_UUIDS[0]}",
-            "flow": "xtls-rprx-vision",
+            "flow": "",
             "tls": {
                 "enabled": true,
                 "server_name": "${TLS_SERVER_NAME}",
@@ -1269,7 +1428,7 @@ generate_main_config() {
                 "reality": {
                     "enabled": true,
                     "public_key": "${REALITY_PUBLIC_KEY}",
-                    "short_id": ""
+                    "short_id": "${REALITY_SHORT_ID}"
                 }
             }
         },
@@ -1289,7 +1448,7 @@ generate_main_config() {
                 "reality": {
                     "enabled": true,
                     "public_key": "${REALITY_PUBLIC_KEY}",
-                    "short_id": ""
+                    "short_id": "${REALITY_SHORT_ID}"
                 }
             }
         },
@@ -1298,7 +1457,7 @@ generate_main_config() {
             "tag": "hysteria2-out",
             "server": "${SERVER_IP}",
             "server_port": ${PROTOCOL_PORTS[2]},
-            "password": "${PROTOCOL_UUIDS[2]}",
+            "password": "${HYSTERIA2_PASSWORD}",
             "tls": {
                 "enabled": true,
                 "server_name": "${TLS_SERVER_NAME}",
@@ -1306,9 +1465,128 @@ generate_main_config() {
             }
         },
         {
+            "type": "tuic",
+            "tag": "tuic-out",
+            "server": "${SERVER_IP}",
+            "server_port": ${PROTOCOL_PORTS[3]},
+            "uuid": "${PROTOCOL_UUIDS[3]}",
+            "password": "${TUIC_PASSWORD}",
+            "congestion_control": "bbr",
+            "tls": {
+                "enabled": true,
+                "server_name": "${TLS_SERVER_NAME}",
+                "alpn": ["h3"]
+            }
+        },
+        {
+            "type": "shadowsocks",
+            "tag": "shadowsocks-out",
+            "server": "${SERVER_IP}",
+            "server_port": ${PROTOCOL_PORTS[4]},
+            "method": "2022-blake3-aes-128-gcm",
+            "password": "${PROTOCOL_UUIDS[4]}"
+        },
+        {
+            "type": "trojan",
+            "tag": "trojan-out",
+            "server": "${SERVER_IP}",
+            "server_port": ${PROTOCOL_PORTS[5]},
+            "password": "${TROJAN_PASSWORD}",
+            "tls": {
+                "enabled": true,
+                "server_name": "${TLS_SERVER_NAME}"
+            }
+        },
+        {
+            "type": "vmess",
+            "tag": "vmess-ws-out",
+            "server": "${SERVER_IP}",
+            "server_port": ${PROTOCOL_PORTS[6]},
+            "uuid": "${PROTOCOL_UUIDS[6]}",
+            "security": "auto",
+            "transport": {
+                "type": "ws",
+                "path": "/${VMESS_WS_PATH}"
+            }
+        },
+        {
+            "type": "vless",
+            "tag": "vless-ws-tls-out",
+            "server": "${SERVER_IP}",
+            "server_port": ${PROTOCOL_PORTS[7]},
+            "uuid": "${PROTOCOL_UUIDS[7]}",
+            "transport": {
+                "type": "ws",
+                "path": "/${VLESS_WS_PATH}"
+            },
+            "tls": {
+                "enabled": true,
+                "server_name": "${TLS_SERVER_NAME}"
+            }
+        },
+        {
+            "type": "vless",
+            "tag": "h2-reality-out",
+            "server": "${SERVER_IP}",
+            "server_port": ${PROTOCOL_PORTS[8]},
+            "uuid": "${PROTOCOL_UUIDS[8]}",
+            "tls": {
+                "enabled": true,
+                "server_name": "${TLS_SERVER_NAME}",
+                "utls": {
+                    "enabled": true,
+                    "fingerprint": "chrome"
+                },
+                "reality": {
+                    "enabled": true,
+                    "public_key": "${REALITY_PUBLIC_KEY}",
+                    "short_id": "${REALITY_SHORT_ID}"
+                }
+            },
+            "transport": {
+                "type": "http"
+            }
+        },
+        {
+            "type": "vless",
+            "tag": "grpc-reality-out",
+            "server": "${SERVER_IP}",
+            "server_port": ${PROTOCOL_PORTS[9]},
+            "uuid": "${PROTOCOL_UUIDS[9]}",
+            "tls": {
+                "enabled": true,
+                "server_name": "${TLS_SERVER_NAME}",
+                "utls": {
+                    "enabled": true,
+                    "fingerprint": "chrome"
+                },
+                "reality": {
+                    "enabled": true,
+                    "public_key": "${REALITY_PUBLIC_KEY}",
+                    "short_id": "${REALITY_SHORT_ID}"
+                }
+            },
+            "transport": {
+                "type": "grpc",
+                "service_name": "grpc"
+            }
+        },
+        {
+            "type": "shadowtls",
+            "tag": "shadowtls-out",
+            "server": "${SERVER_IP}",
+            "server_port": ${PROTOCOL_PORTS[11]},
+            "version": 3,
+            "password": "${SHADOWTLS_PASSWORD}",
+            "tls": {
+                "enabled": true,
+                "server_name": "${TLS_SERVER_NAME}"
+            }
+        },
+        {
             "type": "selector",
             "tag": "proxy",
-            "outbounds": ["xtls-reality-out", "vless-reality-out", "hysteria2-out", "direct"]
+            "outbounds": ["xtls-reality-out", "vless-reality-out", "hysteria2-out", "tuic-out", "shadowsocks-out", "trojan-out", "vmess-ws-out", "vless-ws-tls-out", "h2-reality-out", "grpc-reality-out", "shadowtls-out", "direct"]
         }
     ],
     "route": {
@@ -1764,14 +2042,14 @@ generate_vless_reality_link() {
     local port="${PROTOCOL_PORTS[0]}"
     local sni="www.yahoo.com"
     local public_key="${REALITY_PUBLIC_KEY}"
-    local short_id=""
+    local short_id="${REALITY_SHORT_ID}"
     
-    echo "vless://${uuid}@${SERVER_IP}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${public_key}&sid=${short_id}&type=tcp&headerType=none#VLESS-Reality-${SERVER_IP}"
+    echo "vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${sni}&fp=chrome&pbk=${public_key}&sid=${short_id}&type=tcp&headerType=none#VLESS-Reality-${SERVER_IP}"
 }
 
 # 生成Hysteria2节点链接
 generate_hysteria2_link() {
-    local password="${PROTOCOL_UUIDS[2]}"
+    local password="${HYSTERIA2_PASSWORD}"
     local port="${PROTOCOL_PORTS[2]}"
     local sni="www.bing.com"
     
@@ -1860,7 +2138,7 @@ generate_h2_reality_link() {
     local port="${PROTOCOL_PORTS[8]}"
     local sni="www.apple.com"
     local public_key="${REALITY_PUBLIC_KEY}"
-    local short_id=""
+    local short_id="${REALITY_SHORT_ID}"
     
     echo "vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${sni}&fp=chrome&pbk=${public_key}&sid=${short_id}&type=http&path=/http#H2-Reality-${SERVER_IP}"
 }
@@ -1871,7 +2149,7 @@ generate_grpc_reality_link() {
     local port="${PROTOCOL_PORTS[9]}"
     local sni="www.cloudflare.com"
     local public_key="${REALITY_PUBLIC_KEY}"
-    local short_id=""
+    local short_id="${REALITY_SHORT_ID}"
     
     echo "vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${sni}&fp=chrome&pbk=${public_key}&sid=${short_id}&type=grpc&serviceName=grpc#gRPC-Reality-${SERVER_IP}"
 }
@@ -1895,18 +2173,18 @@ proxies:
     network: tcp
     tls: true
     udp: true
-    flow: xtls-rprx-vision
+    flow: ""
     client-fingerprint: chrome
     servername: www.yahoo.com
     reality-opts:
       public-key: ${REALITY_PUBLIC_KEY}
-      short-id: ""
+      short-id: "${REALITY_SHORT_ID}"
 
   - name: "Hysteria2-${SERVER_IP}"
     type: hysteria2
     server: ${SERVER_IP}
     port: ${PROTOCOL_PORTS[2]}
-    password: ${PROTOCOL_UUIDS[2]}
+    password: ${HYSTERIA2_PASSWORD}
     sni: www.bing.com
     skip-cert-verify: true
 
@@ -1976,7 +2254,7 @@ generate_singbox_client_config() {
       "server": "${SERVER_IP}",
       "server_port": ${PROTOCOL_PORTS[0]},
       "uuid": "${PROTOCOL_UUIDS[0]}",
-      "flow": "xtls-rprx-vision",
+      "flow": "",
       "tls": {
         "enabled": true,
         "server_name": "www.yahoo.com",
@@ -1987,7 +2265,7 @@ generate_singbox_client_config() {
         "reality": {
           "enabled": true,
           "public_key": "${REALITY_PUBLIC_KEY}",
-          "short_id": ""
+          "short_id": "${REALITY_SHORT_ID}"
         }
       }
     },
@@ -1996,7 +2274,7 @@ generate_singbox_client_config() {
       "tag": "Hysteria2",
       "server": "${SERVER_IP}",
       "server_port": ${PROTOCOL_PORTS[2]},
-      "password": "${PROTOCOL_UUIDS[2]}",
+      "password": "${HYSTERIA2_PASSWORD}",
       "tls": {
         "enabled": true,
         "server_name": "www.bing.com",
