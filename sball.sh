@@ -1069,6 +1069,7 @@ generate_singbox_client_config() {
   }
 }
 EOF
+}
 
 # 显示主菜单
 show_menu() {
@@ -1218,6 +1219,7 @@ main() {
             ;;
         * )
             show_menu
+            ;;
     esac
 }
 
