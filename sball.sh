@@ -117,13 +117,15 @@ reading() { read -rp "$(info "$1")" "$2"; }
 text() { 
     local key="$*"
     local lang_var="${L}[$key]"
-    local content
-    if [[ "${!lang_var}" =~ \$ ]]; then
-        content=$(eval echo "${!lang_var}")
-        echo "$content"
-    else
-        echo "${!lang_var}"
+    local content="${!lang_var}"
+    
+    # 安全处理包含变量的文本
+    if [[ "$content" =~ \$ ]]; then
+        # 使用printf替代eval来安全处理变量替换
+        content=$(printf '%s\n' "$content" | sed "s/\${SERVER_IP_DEFAULT}/$SERVER_IP_DEFAULT/g")
     fi
+    
+    echo "$content"
 }
 
 # 选择语言
