@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # SBall 科学上网代理一键安装脚本
 # 项目名称: sball科学上网代理
