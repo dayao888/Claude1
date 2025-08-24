@@ -235,11 +235,8 @@ generate_vless_reality_config() {
     local uuid=$(generate_uuid)
     local port=${PROTOCOL_PORTS["vless-reality"]}
     local short_id=$(generate_random 8)
-    
-    # 生成密钥对
-    local keypair=$($INSTALL_DIR/sing-box generate reality-keypair 2>/dev/null)
-    local private_key=$(echo "$keypair" | jq -r '.private_key' 2>/dev/null || generate_random 43)
-    local public_key=$(echo "$keypair" | jq -r '.public_key' 2>/dev/null || generate_random 43)
+    local private_key=$($INSTALL_DIR/sing-box generate reality-keypair | jq -r '.private_key')
+    local public_key=$($INSTALL_DIR/sing-box generate reality-keypair | jq -r '.public_key')
     
     PROTOCOL_CONFIGS["vless-reality"]="vless://$uuid@$SERVER_IP:$port?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.yahoo.com&fp=chrome&pbk=$public_key&sid=$short_id&type=tcp&headerType=none#VLESS-Reality-$SERVER_IP"
     
@@ -501,11 +498,8 @@ generate_h2_reality_config() {
     local uuid=$(generate_uuid)
     local port=${PROTOCOL_PORTS["h2-reality"]}
     local short_id=$(generate_random 8)
-    
-    # 生成密钥对
-    local keypair=$($INSTALL_DIR/sing-box generate reality-keypair 2>/dev/null)
-    local private_key=$(echo "$keypair" | jq -r '.private_key' 2>/dev/null || generate_random 43)
-    local public_key=$(echo "$keypair" | jq -r '.public_key' 2>/dev/null || generate_random 43)
+    local private_key=$($INSTALL_DIR/sing-box generate reality-keypair | jq -r '.private_key')
+    local public_key=$($INSTALL_DIR/sing-box generate reality-keypair | jq -r '.public_key')
     
     PROTOCOL_CONFIGS["h2-reality"]="vless://$uuid@$SERVER_IP:$port?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=$public_key&sid=$short_id&type=http&path=/&host=www.microsoft.com#H2-Reality-$SERVER_IP"
     
@@ -547,12 +541,9 @@ generate_grpc_reality_config() {
     local uuid=$(generate_uuid)
     local port=${PROTOCOL_PORTS["grpc-reality"]}
     local short_id=$(generate_random 8)
+    local private_key=$($INSTALL_DIR/sing-box generate reality-keypair | jq -r '.private_key')
+    local public_key=$($INSTALL_DIR/sing-box generate reality-keypair | jq -r '.public_key')
     local service_name=$(generate_random 8)
-    
-    # 生成密钥对
-    local keypair=$($INSTALL_DIR/sing-box generate reality-keypair 2>/dev/null)
-    local private_key=$(echo "$keypair" | jq -r '.private_key' 2>/dev/null || generate_random 43)
-    local public_key=$(echo "$keypair" | jq -r '.public_key' 2>/dev/null || generate_random 43)
     
     PROTOCOL_CONFIGS["grpc-reality"]="vless://$uuid@$SERVER_IP:$port?encryption=none&security=reality&sni=www.apple.com&fp=chrome&pbk=$public_key&sid=$short_id&type=grpc&serviceName=$service_name#gRPC-Reality-$SERVER_IP"
     
@@ -642,33 +633,15 @@ generate_main_config() {
     "route": {
         "rules": [
             {
-                "ip_cidr": [
-                    "10.0.0.0/8",
-                    "172.16.0.0/12",
-                    "192.168.0.0/16",
-                    "127.0.0.0/8",
-                    "169.254.0.0/16",
-                    "224.0.0.0/4",
-                    "::1/128",
-                    "fc00::/7",
-                    "fe80::/10"
-                ],
+                "geoip": "private",
                 "outbound": "direct"
             },
             {
-                "ip_cidr": [
-                    "1.0.1.0/24",
-                    "1.1.1.0/24",
-                    "8.8.8.0/24",
-                    "8.8.4.0/24",
-                    "9.9.9.0/24",
-                    "149.112.112.0/24"
-                ],
+                "geoip": "cn",
                 "outbound": "direct"
             }
         ],
-        "auto_detect_interface": true,
-        "final": "direct"
+        "auto_detect_interface": true
     }
 }
 EOF
@@ -766,29 +739,30 @@ show_node_info() {
     echo -e "${GREEN}以下是所有协议的节点配置信息，请根据您的客户端选择对应格式:${NC}"
     echo
     
-    # 检查节点信息是否存在
-    if [[ ! -f "$CONFIG_DIR/nodes.txt" ]]; then
-        error "节点信息文件不存在，请重新生成节点"
-        return 1
-    fi
+    for protocol in "${PROTOCOLS[@]}"; do
+        if [[ -n "${PROTOCOL_CONFIGS[$protocol]}" ]]; then
+            echo -e "${YELLOW}$protocol:${NC}"
+            echo "${PROTOCOL_CONFIGS[$protocol]}"
+            echo
+        fi
+    done
     
-    # 直接显示节点信息文件内容（排除注释）
-    while IFS= read -r line; do
-        if [[ ! "$line" =~ ^# && -n "$line" ]]; then
-            # 提取协议名称
-            if [[ "$line" =~ (vless://|vmess://|hysteria2://|ss://|trojan://) ]]; then
-                if [[ "$line" =~ #([^#]+)$ ]]; then
-                    local protocol_name="${BASH_REMATCH[1]}"
-                    echo -e "${YELLOW}$protocol_name:${NC}"
-                fi
-                echo "$line"
+    echo -e "${GREEN}节点信息已保存到: $CONFIG_DIR/nodes.txt${NC}"
+    
+    # 保存节点信息到文件
+    {
+        echo "# SBall 节点信息"
+        echo "# 生成时间: $(date)"
+        echo "# 服务器IP: $SERVER_IP"
+        echo
+        for protocol in "${PROTOCOLS[@]}"; do
+            if [[ -n "${PROTOCOL_CONFIGS[$protocol]}" ]]; then
+                echo "# $protocol"
+                echo "${PROTOCOL_CONFIGS[$protocol]}"
                 echo
             fi
-        fi
-    done < "$CONFIG_DIR/nodes.txt"
-    
-    echo -e "${GREEN}节点信息文件位置: $CONFIG_DIR/nodes.txt${NC}"
-    echo -e "${BLUE}提示: 可以直接复制上述链接到客户端使用${NC}"
+        done
+    } > "$CONFIG_DIR/nodes.txt"
 }
 
 # 安装函数
@@ -977,22 +951,28 @@ test_config() {
     fi
 }
 
-# 重新生成配置（修复问题版本）
-regenerate_config() {
-    log "重新生成配置文件（修复兼容性问题）..."
+# 生成新节点
+generate_new_nodes() {
+    log "重新生成节点配置..."
     
-    # 停止服务
-    systemctl stop sing-box 2>/dev/null || true
-    
-    # 备份现有配置
-    if [[ -f "$CONFIG_DIR/config.json" ]]; then
-        cp "$CONFIG_DIR/config.json" "$CONFIG_DIR/config.json.backup.$(date +%Y%m%d_%H%M%S)"
+    if [[ ! -f "$CONFIG_DIR/config.json" ]]; then
+        error "请先安装 SBall"
+        return 1
     fi
     
-    # 重新生成所有配置
+    # 重新生成配置
+    generate_protocol_ports
     generate_all_configs
     
-    log "配置重新生成完成"
+    # 重启服务应用新配置
+    restart_service
+    
+    if systemctl is-active --quiet sing-box; then
+        log "新节点生成完成！"
+        show_node_info
+    else
+        error "应用新配置失败"
+    fi
 }
 
 # 备份配置
@@ -1213,32 +1193,7 @@ main() {
                     read -p "按回车键继续..."
                     ;;
                 11)
-                    # 检查是否已安装
-                    if [[ -f "$CONFIG_DIR/config.json" ]]; then
-                        echo -e "${YELLOW}选择操作:${NC}"
-                        echo "1. 重新生成节点（新端口新密钥）"
-                        echo "2. 修复配置问题"
-                        read -p "请选择 [1-2]: " sub_choice
-                        case $sub_choice in
-                            1)
-                                generate_protocol_ports
-                                generate_all_configs
-                                restart_service
-                                if systemctl is-active --quiet sing-box; then
-                                    log "新节点生成完成！"
-                                    show_node_info
-                                else
-                                    error "应用新配置失败"
-                                fi
-                                ;;
-                            2)
-                                regenerate_config
-                                restart_service
-                                ;;
-                        esac
-                    else
-                        error "请先安装 SBall"
-                    fi
+                    generate_new_nodes
                     read -p "按回车键继续..."
                     ;;
                 12)
