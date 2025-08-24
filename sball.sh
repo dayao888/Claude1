@@ -1,537 +1,1290 @@
-#!/usr/bin/env bash
-# sball.sh - Sing-box 一键安装与管理脚本 (Ubuntu amd64)
-# MIT License
-# 作者：dayao + ChatGPT（按《开发计划书》实现）
-# 版本：2025-08-24
+#!/bin/bash
 
-set -euo pipefail
+# SBall 科学上网代理一键安装脚本
+# 项目名称: sball科学上网代理
+# 许可证: MIT License
+# 支持平台: Linux (Ubuntu--amd64)
 
-# ========= 可调参数（按需修改） =========
-SB_VERSION="1.12.2"
-SB_TGZ_URL="https://github.com/SagerNet/sing-box/releases/download/v${SB_VERSION}/sing-box-${SB_VERSION}-linux-amd64.tar.gz"
+set -e
+
+# 颜色定义
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+PURPLE='\033[0;35m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+# 全局变量
+SING_BOX_VERSION="1.12.2"
+SING_BOX_URL="https://github.com/SagerNet/sing-box/releases/download/v${SING_BOX_VERSION}/sing-box-${SING_BOX_VERSION}-linux-amd64.tar.gz"
 INSTALL_DIR="/usr/local/bin"
-SB_BIN="${INSTALL_DIR}/sing-box"
-CONF_DIR="/etc/sing-box"
-CERT_DIR="${CONF_DIR}/certs"
-DATA_DIR="/var/lib/sing-box"
-LOG_DIR="/var/log/sing-box"
-UNIT_FILE="/etc/systemd/system/sing-box.service"
-MENU_TITLE="sball 科学上网 - 一键安装与管理"
-LANGUAGE="zh-CN"
-DEFAULT_SNI_LIST=("www.yahoo.com" "www.bing.com" "www.cloudflare.com" "www.microsoft.com" "www.amazon.com" "www.wikipedia.org")
-# =====================================
+CONFIG_DIR="/etc/sing-box"
+SERVICE_FILE="/etc/systemd/system/sing-box.service"
+LOG_FILE="/var/log/sing-box.log"
 
-# 全局变量（安装过程中生成）
-UUID=""
-PASSWORD=""
-REALITY_PRIVATE_KEY=""
-REALITY_PUBLIC_KEY=""
-REALITY_SHORT_ID=""
-PUB_IP=""
+# 服务器信息
+SERVER_IP=""
 DOMAIN=""
-USE_DOMAIN_TLS="no"
+USE_DOMAIN=false
+USE_CUSTOM_PORTS=false
 
-# ----- 工具函数 -----
-red(){ echo -e "\e[31m$*\e[0m"; }
-green(){ echo -e "\e[32m$*\e[0m"; }
-yellow(){ echo -e "\e[33m$*\e[0m"; }
-blue(){ echo -e "\e[34m$*\e[0m"; }
+# 协议配置
+PROTOCOLS=("vless-reality" "hysteria2" "tuic" "shadowtls" "shadowsocks" "trojan" "vmess-ws" "vless-ws-tls" "h2-reality" "grpc-reality" "anytls")
 
-need_root(){
-  if [[ $EUID -ne 0 ]]; then
-    red "请用 root 运行：sudo bash sball.sh"
-    exit 1
-  fi
+# 端口和配置映射
+declare -A PROTOCOL_PORTS
+declare -A PROTOCOL_CONFIGS
+
+# 显示横幅
+show_banner() {
+    clear
+    echo -e "${CYAN}"
+    cat << "EOF"
+   _____ ____        _ _ 
+  / ____| __ )      | | |
+ | (___  |  _ \ __ _| | |
+  \___ \ | |_) / _` | | |
+  ____) ||  __/ (_| | | |
+ |_____/ |_|   \__,_|_|_|
+                         
+SBall 科学上网代理 v1.0
+支持 11 种主流协议的一键部署解决方案
+EOF
+    echo -e "${NC}"
+    echo -e "${GREEN}项目地址: https://github.com/dayao888/Claude1/blob/main/sball.sh${NC}"
+    echo -e "${YELLOW}支持协议: VLESS-Reality, Hysteria2, TUIC, ShadowTLS, Shadowsocks, Trojan, VMess-WS, VLESS-WS-TLS, H2-Reality, gRPC-Reality, AnyTLS${NC}"
+    echo
 }
 
-need_ubuntu_amd64(){
-  if ! command -v dpkg >/dev/null 2>&1; then
-    red "当前系统非 Debian/Ubuntu 系。建议 Ubuntu 20.04/22.04/24.04 amd64。"
-    exit 1
-  fi
-  arch="$(dpkg --print-architecture)"
-  if [[ "$arch" != "amd64" ]]; then
-    red "当前架构为 ${arch}，本脚本仅支持 amd64。"
-    exit 1
-  fi
+# 日志函数
+log() {
+    echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')] $1${NC}"
 }
 
-rand_port(){
-  # 避开常见端口，选 20000-59999
-  shuf -i 20000-59999 -n 1
+error() {
+    echo -e "${RED}[$(date +'%Y-%m-%d %H:%M:%S')] ERROR: $1${NC}"
 }
 
-ensure_deps(){
-  apt-get update -y
-  apt-get install -y --no-install-recommends \
-    curl wget tar xz-utils jq qrencode uuid-runtime openssl ca-certificates netcat lsof
+warn() {
+    echo -e "${YELLOW}[$(date +'%Y-%m-%d %H:%M:%S')] WARNING: $1${NC}"
 }
 
-ensure_dirs(){
-  mkdir -p "$CONF_DIR" "$CERT_DIR" "$DATA_DIR" "$LOG_DIR"
-  touch "${LOG_DIR}/access.log" "${LOG_DIR}/error.log"
+info() {
+    echo -e "${BLUE}[$(date +'%Y-%m-%d %H:%M:%S')] INFO: $1${NC}"
 }
 
-get_pub_ip(){
-  # 多源兜底
-  PUB_IP="$(curl -fsS --max-time 5 https://api.ipify.org || true)"
-  [[ -z "${PUB_IP}" ]] && PUB_IP="$(curl -fsS --max-time 5 https://ifconfig.me || true)"
-  [[ -z "${PUB_IP}" ]] && PUB_IP="$(curl -fsS --max-time 5 https://ipv4.icanhazip.com || true)"
-  if [[ -z "${PUB_IP}" ]]; then
-    red "无法获取公网 IP，请检查出网。稍后节点展示将回退为 服务器IP=本机IP。"
-    PUB_IP="$(hostname -I | awk '{print $1}')"
-  fi
-}
-
-install_singbox(){
-  if [[ -x "$SB_BIN" ]]; then
-    green "检测到 sing-box 已存在：$("$SB_BIN" version || true)"
-  else
-    yellow "下载并安装 sing-box v${SB_VERSION} ..."
-    tmpdir="$(mktemp -d)"
-    cd "$tmpdir"
-    curl -fL "$SB_TGZ_URL" -o sb.tgz
-    tar -xzf sb.tgz
-    install -m 0755 "sing-box-${SB_VERSION}-linux-amd64/sing-box" "$SB_BIN"
-    cd /
-    rm -rf "$tmpdir"
-    green "sing-box 安装完成：$("$SB_BIN" version)"
-  fi
-}
-
-generate_base_secrets(){
-  UUID="$(uuidgen)"
-  PASSWORD="$(openssl rand -hex 16)"
-  REALITY_SHORT_ID="$(openssl rand -hex 4)"    # 8 hex chars
-  # Reality 密钥对
-  kjson="$("$SB_BIN" generate reality-keypair)"
-  REALITY_PRIVATE_KEY="$(echo "$kjson" | jq -r '.private_key')"
-  REALITY_PUBLIC_KEY="$(echo "$kjson" | jq -r '.public_key')"
-}
-
-ask_domain_tls(){
-  echo
-  yellow "是否使用你自己的域名为 WS/TLS 与 Trojan 提供证书？(y/N)"
-  read -r ans
-  if [[ "${ans,,}" == "y" ]]; then
-    read -rp "请输入已解析到本机IP(${PUB_IP})的域名：" DOMAIN
-    if [[ -z "$DOMAIN" ]]; then
-      red "未输入域名，回退为自签证书（客户端需允许 insecure）。"
-      USE_DOMAIN_TLS="no"
-    else
-      USE_DOMAIN_TLS="yes"
+# 检查系统环境
+check_system() {
+    if [[ ! -f /etc/os-release ]]; then
+        error "无法识别的操作系统"
+        exit 1
     fi
-  else
-    USE_DOMAIN_TLS="no"
-  fi
+    
+    . /etc/os-release
+    if [[ "$ID" != "ubuntu" ]]; then
+        warn "建议使用 Ubuntu 系统，当前系统: $ID"
+    fi
+    
+    if [[ $(uname -m) != "x86_64" ]]; then
+        error "仅支持 x86_64 架构"
+        exit 1
+    fi
+    
+    if [[ $EUID -ne 0 ]]; then
+        error "请使用 root 权限运行此脚本"
+        exit 1
+    fi
 }
 
-issue_certificates(){
-  if [[ "${USE_DOMAIN_TLS}" == "yes" ]]; then
-    yellow "为 ${DOMAIN} 申请自签证书（简化；如需 ACME 可自行替换）..."
-    # 自签（3650 天），生产请改为 ACME/真实证书；客户端需配合或信任
-    openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
-      -keyout "${CERT_DIR}/${DOMAIN}.key" \
-      -out "${CERT_DIR}/${DOMAIN}.crt" \
-      -subj "/CN=${DOMAIN}"
-    chmod 600 "${CERT_DIR}/${DOMAIN}.key"
-  else
-    yellow "未使用域名：将生成自签证书供 Trojan/VLESS-WS-TLS 测试使用（客户端需允许 insecure）。"
-    openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
-      -keyout "${CERT_DIR}/self.key" \
-      -out "${CERT_DIR}/self.crt" \
-      -subj "/CN=localhost"
-    chmod 600 "${CERT_DIR}/self.key"
-  fi
+# 获取服务器IP
+get_server_ip() {
+    SERVER_IP=$(curl -s4 ifconfig.me) || SERVER_IP=$(curl -s4 icanhazip.com) || SERVER_IP=$(curl -s4 ipecho.net/plain)
+    if [[ -z "$SERVER_IP" ]]; then
+        error "无法获取服务器IP地址"
+        exit 1
+    fi
+    log "检测到服务器IP: $SERVER_IP"
 }
 
-write_systemd_unit(){
-cat > "$UNIT_FILE" <<EOF
+# 生成随机UUID
+generate_uuid() {
+    if command -v uuidgen >/dev/null 2>&1; then
+        uuidgen
+    else
+        cat /proc/sys/kernel/random/uuid
+    fi
+}
+
+# 生成随机端口
+generate_port() {
+    local min_port=10000
+    local max_port=65000
+    echo $((RANDOM % (max_port - min_port + 1) + min_port))
+}
+
+# 生成随机路径
+generate_path() {
+    echo "/$(tr -dc 'a-zA-Z0-9' < /dev/urandom | fold -w 8 | head -n 1)"
+}
+
+# 生成随机字符串
+generate_random() {
+    local length=${1:-16}
+    tr -dc 'a-zA-Z0-9' < /dev/urandom | fold -w $length | head -n 1
+}
+
+# 安装依赖
+install_dependencies() {
+    log "安装系统依赖..."
+    apt update -qq
+    apt install -y curl wget unzip openssl uuid-runtime jq
+    
+    # 安装证书管理工具
+    if ! command -v acme.sh >/dev/null 2>&1; then
+        log "安装 acme.sh..."
+        curl https://get.acme.sh | sh -s email=my@example.com
+        source ~/.bashrc
+    fi
+}
+
+# 用户配置询问
+user_configuration() {
+    echo -e "${CYAN}=== 配置选项 ===${NC}"
+    
+    # 是否使用自定义端口
+    read -p "是否使用自定义端口? (y/n, 默认: n): " custom_ports
+    if [[ "$custom_ports" =~ ^[Yy]$ ]]; then
+        USE_CUSTOM_PORTS=true
+        echo -e "${YELLOW}将为每个协议设置自定义端口${NC}"
+    fi
+    
+    # 是否使用域名
+    read -p "是否使用自己的域名? (y/n, 默认: n): " use_domain
+    if [[ "$use_domain" =~ ^[Yy]$ ]]; then
+        read -p "请输入您的域名: " domain_input
+        if [[ -n "$domain_input" ]]; then
+            DOMAIN="$domain_input"
+            USE_DOMAIN=true
+            log "将使用域名: $DOMAIN"
+        fi
+    fi
+    
+    echo
+}
+
+# 生成协议端口
+generate_protocol_ports() {
+    log "生成协议端口配置..."
+    
+    for protocol in "${PROTOCOLS[@]}"; do
+        if [[ "$USE_CUSTOM_PORTS" == true ]]; then
+            read -p "请输入 $protocol 协议的端口 (回车使用随机端口): " custom_port
+            if [[ -n "$custom_port" && "$custom_port" =~ ^[0-9]+$ && "$custom_port" -ge 1024 && "$custom_port" -le 65535 ]]; then
+                PROTOCOL_PORTS["$protocol"]="$custom_port"
+            else
+                PROTOCOL_PORTS["$protocol"]=$(generate_port)
+            fi
+        else
+            PROTOCOL_PORTS["$protocol"]=$(generate_port)
+        fi
+    done
+}
+
+# 下载并安装 sing-box
+install_singbox() {
+    log "下载 sing-box v$SING_BOX_VERSION..."
+    
+    cd /tmp
+    wget -q --show-progress "$SING_BOX_URL" -O sing-box.tar.gz
+    
+    log "解压并安装 sing-box..."
+    tar -xzf sing-box.tar.gz
+    mv sing-box-*/sing-box "$INSTALL_DIR/"
+    chmod +x "$INSTALL_DIR/sing-box"
+    
+    # 创建配置目录
+    mkdir -p "$CONFIG_DIR"
+    
+    log "sing-box 安装完成"
+}
+
+# 生成证书
+generate_certificates() {
+    local cert_dir="$CONFIG_DIR/certs"
+    mkdir -p "$cert_dir"
+    
+    if [[ "$USE_DOMAIN" == true ]]; then
+        log "为域名 $DOMAIN 申请 SSL 证书..."
+        ~/.acme.sh/acme.sh --issue -d "$DOMAIN" --standalone --keylength ec-256
+        ~/.acme.sh/acme.sh --install-cert -d "$DOMAIN" --ecc \
+            --fullchain-file "$cert_dir/cert.pem" \
+            --key-file "$cert_dir/private.key"
+    else
+        log "生成自签名证书..."
+        openssl req -new -newkey rsa:2048 -days 365 -nodes -x509 \
+            -subj "/C=US/ST=State/L=City/O=Organization/CN=localhost" \
+            -keyout "$cert_dir/private.key" \
+            -out "$cert_dir/cert.pem"
+    fi
+}
+
+# 生成 VLESS-Reality 配置
+generate_vless_reality_config() {
+    local uuid=$(generate_uuid)
+    local port=${PROTOCOL_PORTS["vless-reality"]}
+    local short_id=$(generate_random 8)
+    local private_key=$($INSTALL_DIR/sing-box generate reality-keypair | jq -r '.private_key')
+    local public_key=$($INSTALL_DIR/sing-box generate reality-keypair | jq -r '.public_key')
+    
+    PROTOCOL_CONFIGS["vless-reality"]="vless://$uuid@$SERVER_IP:$port?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.yahoo.com&fp=chrome&pbk=$public_key&sid=$short_id&type=tcp&headerType=none#VLESS-Reality-$SERVER_IP"
+    
+    cat > "$CONFIG_DIR/_xtls-reality_inbounds.json" << EOF
+{
+    "type": "vless",
+    "tag": "vless-reality-in",
+    "listen": "::",
+    "listen_port": $port,
+    "users": [
+        {
+            "uuid": "$uuid",
+            "flow": "xtls-rprx-vision"
+        }
+    ],
+    "tls": {
+        "enabled": true,
+        "server_name": "www.yahoo.com",
+        "reality": {
+            "enabled": true,
+            "handshake": {
+                "server": "www.yahoo.com",
+                "server_port": 443
+            },
+            "private_key": "$private_key",
+            "short_id": [
+                "$short_id"
+            ]
+        }
+    }
+}
+EOF
+}
+
+# 生成 Hysteria2 配置
+generate_hysteria2_config() {
+    local uuid=$(generate_uuid)
+    local port=${PROTOCOL_PORTS["hysteria2"]}
+    
+    PROTOCOL_CONFIGS["hysteria2"]="hysteria2://$uuid@$SERVER_IP:$port?sni=www.bing.com&alpn=h3&insecure=1#Hysteria2-$SERVER_IP"
+    
+    cat > "$CONFIG_DIR/_hysteria2_inbounds.json" << EOF
+{
+    "type": "hysteria2",
+    "tag": "hysteria2-in",
+    "listen": "::",
+    "listen_port": $port,
+    "users": [
+        {
+            "password": "$uuid"
+        }
+    ],
+    "tls": {
+        "enabled": true,
+        "alpn": [
+            "h3"
+        ],
+        "certificate_path": "$CONFIG_DIR/certs/cert.pem",
+        "key_path": "$CONFIG_DIR/certs/private.key"
+    }
+}
+EOF
+}
+
+# 生成 TUIC 配置
+generate_tuic_config() {
+    local uuid=$(generate_uuid)
+    local password=$(generate_random 16)
+    local port=${PROTOCOL_PORTS["tuic"]}
+    
+    PROTOCOL_CONFIGS["tuic"]="tuic://$uuid:$password@$SERVER_IP:$port?congestion_control=bbr&udp_relay_mode=native&alpn=h3&allow_insecure=1#TUIC-$SERVER_IP"
+    
+    cat > "$CONFIG_DIR/_tuic_inbounds.json" << EOF
+{
+    "type": "tuic",
+    "tag": "tuic-in",
+    "listen": "::",
+    "listen_port": $port,
+    "users": [
+        {
+            "uuid": "$uuid",
+            "password": "$password"
+        }
+    ],
+    "congestion_control": "bbr",
+    "tls": {
+        "enabled": true,
+        "alpn": [
+            "h3"
+        ],
+        "certificate_path": "$CONFIG_DIR/certs/cert.pem",
+        "key_path": "$CONFIG_DIR/certs/private.key"
+    }
+}
+EOF
+}
+
+# 生成 ShadowTLS 配置
+generate_shadowtls_config() {
+    local password=$(generate_random 16)
+    local port=${PROTOCOL_PORTS["shadowtls"]}
+    
+    PROTOCOL_CONFIGS["shadowtls"]="ss://$(echo -n "chacha20-ietf-poly1305:$password" | base64)@$SERVER_IP:$port#ShadowTLS-$SERVER_IP"
+    
+    cat > "$CONFIG_DIR/_ShadowTLS_inbounds.json" << EOF
+{
+    "type": "shadowtls",
+    "tag": "shadowtls-in",
+    "listen": "::",
+    "listen_port": $port,
+    "version": 3,
+    "users": [
+        {
+            "password": "$password"
+        }
+    ],
+    "handshake": {
+        "server": "www.google.com",
+        "server_port": 443
+    },
+    "detour": "shadowsocks-in"
+}
+EOF
+}
+
+# 生成 Shadowsocks 配置
+generate_shadowsocks_config() {
+    local password=$(generate_random 16)
+    local port=${PROTOCOL_PORTS["shadowsocks"]}
+    
+    PROTOCOL_CONFIGS["shadowsocks"]="ss://$(echo -n "chacha20-ietf-poly1305:$password" | base64)@$SERVER_IP:$port#Shadowsocks-$SERVER_IP"
+    
+    cat > "$CONFIG_DIR/_shadowsocks_inbounds.json" << EOF
+{
+    "type": "shadowsocks",
+    "tag": "shadowsocks-in",
+    "listen": "127.0.0.1",
+    "listen_port": $((port + 1)),
+    "method": "chacha20-ietf-poly1305",
+    "password": "$password"
+}
+EOF
+}
+
+# 生成 Trojan 配置
+generate_trojan_config() {
+    local password=$(generate_random 16)
+    local port=${PROTOCOL_PORTS["trojan"]}
+    
+    PROTOCOL_CONFIGS["trojan"]="trojan://$password@$SERVER_IP:$port?security=tls&type=tcp&headerType=none#Trojan-$SERVER_IP"
+    
+    cat > "$CONFIG_DIR/_trojan_inbounds.json" << EOF
+{
+    "type": "trojan",
+    "tag": "trojan-in",
+    "listen": "::",
+    "listen_port": $port,
+    "users": [
+        {
+            "password": "$password"
+        }
+    ],
+    "tls": {
+        "enabled": true,
+        "certificate_path": "$CONFIG_DIR/certs/cert.pem",
+        "key_path": "$CONFIG_DIR/certs/private.key"
+    }
+}
+EOF
+}
+
+# 生成 VMess-WS 配置
+generate_vmess_ws_config() {
+    local uuid=$(generate_uuid)
+    local port=${PROTOCOL_PORTS["vmess-ws"]}
+    local path=$(generate_path)
+    
+    local vmess_config='{
+        "v": "2",
+        "ps": "VMess-WS-'$SERVER_IP'",
+        "add": "'$SERVER_IP'",
+        "port": "'$port'",
+        "id": "'$uuid'",
+        "aid": "0",
+        "scy": "auto",
+        "net": "ws",
+        "type": "none",
+        "host": "",
+        "path": "'$path'",
+        "tls": "",
+        "sni": "",
+        "alpn": "",
+        "fp": ""
+    }'
+    
+    PROTOCOL_CONFIGS["vmess-ws"]="vmess://$(echo -n "$vmess_config" | base64 -w 0)"
+    
+    cat > "$CONFIG_DIR/_vmess-ws_inbounds.json" << EOF
+{
+    "type": "vmess",
+    "tag": "vmess-ws-in",
+    "listen": "::",
+    "listen_port": $port,
+    "users": [
+        {
+            "uuid": "$uuid",
+            "alterId": 0
+        }
+    ],
+    "transport": {
+        "type": "ws",
+        "path": "$path"
+    }
+}
+EOF
+}
+
+# 生成 VLESS-WS-TLS 配置
+generate_vless_ws_tls_config() {
+    local uuid=$(generate_uuid)
+    local port=${PROTOCOL_PORTS["vless-ws-tls"]}
+    local path=$(generate_path)
+    
+    if [[ "$USE_DOMAIN" == true ]]; then
+        PROTOCOL_CONFIGS["vless-ws-tls"]="vless://$uuid@$DOMAIN:$port?encryption=none&security=tls&type=ws&host=$DOMAIN&path=$path#VLESS-WS-TLS-$DOMAIN"
+        local server_name="$DOMAIN"
+    else
+        PROTOCOL_CONFIGS["vless-ws-tls"]="vless://$uuid@$SERVER_IP:$port?encryption=none&security=tls&type=ws&path=$path&allowInsecure=1#VLESS-WS-TLS-$SERVER_IP"
+        local server_name="$SERVER_IP"
+    fi
+    
+    cat > "$CONFIG_DIR/_vless-ws-tls_inbounds.json" << EOF
+{
+    "type": "vless",
+    "tag": "vless-ws-tls-in",
+    "listen": "::",
+    "listen_port": $port,
+    "users": [
+        {
+            "uuid": "$uuid"
+        }
+    ],
+    "tls": {
+        "enabled": true,
+        "server_name": "$server_name",
+        "certificate_path": "$CONFIG_DIR/certs/cert.pem",
+        "key_path": "$CONFIG_DIR/certs/private.key"
+    },
+    "transport": {
+        "type": "ws",
+        "path": "$path"
+    }
+}
+EOF
+}
+
+# 生成 H2-Reality 配置
+generate_h2_reality_config() {
+    local uuid=$(generate_uuid)
+    local port=${PROTOCOL_PORTS["h2-reality"]}
+    local short_id=$(generate_random 8)
+    local private_key=$($INSTALL_DIR/sing-box generate reality-keypair | jq -r '.private_key')
+    local public_key=$($INSTALL_DIR/sing-box generate reality-keypair | jq -r '.public_key')
+    
+    PROTOCOL_CONFIGS["h2-reality"]="vless://$uuid@$SERVER_IP:$port?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=$public_key&sid=$short_id&type=http&path=/&host=www.microsoft.com#H2-Reality-$SERVER_IP"
+    
+    cat > "$CONFIG_DIR/_h2-reality_inbounds.json" << EOF
+{
+    "type": "vless",
+    "tag": "h2-reality-in",
+    "listen": "::",
+    "listen_port": $port,
+    "users": [
+        {
+            "uuid": "$uuid"
+        }
+    ],
+    "tls": {
+        "enabled": true,
+        "server_name": "www.microsoft.com",
+        "reality": {
+            "enabled": true,
+            "handshake": {
+                "server": "www.microsoft.com",
+                "server_port": 443
+            },
+            "private_key": "$private_key",
+            "short_id": [
+                "$short_id"
+            ]
+        }
+    },
+    "transport": {
+        "type": "http"
+    }
+}
+EOF
+}
+
+# 生成 gRPC-Reality 配置
+generate_grpc_reality_config() {
+    local uuid=$(generate_uuid)
+    local port=${PROTOCOL_PORTS["grpc-reality"]}
+    local short_id=$(generate_random 8)
+    local private_key=$($INSTALL_DIR/sing-box generate reality-keypair | jq -r '.private_key')
+    local public_key=$($INSTALL_DIR/sing-box generate reality-keypair | jq -r '.public_key')
+    local service_name=$(generate_random 8)
+    
+    PROTOCOL_CONFIGS["grpc-reality"]="vless://$uuid@$SERVER_IP:$port?encryption=none&security=reality&sni=www.apple.com&fp=chrome&pbk=$public_key&sid=$short_id&type=grpc&serviceName=$service_name#gRPC-Reality-$SERVER_IP"
+    
+    cat > "$CONFIG_DIR/_grpc-reality_inbounds.json" << EOF
+{
+    "type": "vless",
+    "tag": "grpc-reality-in",
+    "listen": "::",
+    "listen_port": $port,
+    "users": [
+        {
+            "uuid": "$uuid"
+        }
+    ],
+    "tls": {
+        "enabled": true,
+        "server_name": "www.apple.com",
+        "reality": {
+            "enabled": true,
+            "handshake": {
+                "server": "www.apple.com",
+                "server_port": 443
+            },
+            "private_key": "$private_key",
+            "short_id": [
+                "$short_id"
+            ]
+        }
+    },
+    "transport": {
+        "type": "grpc",
+        "service_name": "$service_name"
+    }
+}
+EOF
+}
+
+# 生成 AnyTLS 配置
+generate_anytls_config() {
+    local uuid=$(generate_uuid)
+    local port=${PROTOCOL_PORTS["anytls"]}
+    
+    PROTOCOL_CONFIGS["anytls"]="vless://$uuid@$SERVER_IP:$port?encryption=none&security=tls&type=tcp&headerType=none&allowInsecure=1#AnyTLS-$SERVER_IP"
+    
+    cat > "$CONFIG_DIR/_anytls_inbounds.json" << EOF
+{
+    "type": "vless",
+    "tag": "anytls-in",
+    "listen": "::",
+    "listen_port": $port,
+    "users": [
+        {
+            "uuid": "$uuid"
+        }
+    ],
+    "tls": {
+        "enabled": true,
+        "certificate_path": "$CONFIG_DIR/certs/cert.pem",
+        "key_path": "$CONFIG_DIR/certs/private.key"
+    }
+}
+EOF
+}
+
+# 生成主配置文件
+generate_main_config() {
+    log "生成主配置文件..."
+    
+    cat > "$CONFIG_DIR/config.json" << 'EOF'
+{
+    "log": {
+        "disabled": false,
+        "level": "info",
+        "timestamp": true
+    },
+    "inbounds": [],
+    "outbounds": [
+        {
+            "type": "direct",
+            "tag": "direct"
+        },
+        {
+            "type": "block",
+            "tag": "block"
+        }
+    ],
+    "route": {
+        "rules": [
+            {
+                "geoip": "private",
+                "outbound": "direct"
+            },
+            {
+                "geoip": "cn",
+                "outbound": "direct"
+            }
+        ],
+        "auto_detect_interface": true
+    }
+}
+EOF
+    
+    # 合并所有协议配置
+    local inbounds_json="["
+    local first=true
+    
+    for config_file in "$CONFIG_DIR"/_*_inbounds.json; do
+        if [[ -f "$config_file" ]]; then
+            if [[ "$first" == true ]]; then
+                first=false
+            else
+                inbounds_json+=","
+            fi
+            inbounds_json+="$(cat "$config_file")"
+        fi
+    done
+    inbounds_json+="]"
+    
+    # 更新主配置文件的inbounds部分
+    jq --argjson inbounds "$inbounds_json" '.inbounds = $inbounds' "$CONFIG_DIR/config.json" > /tmp/config.json.tmp
+    mv /tmp/config.json.tmp "$CONFIG_DIR/config.json"
+}
+
+# 生成所有协议配置
+generate_all_configs() {
+    log "生成所有协议配置..."
+    
+    generate_vless_reality_config
+    generate_hysteria2_config
+    generate_tuic_config
+    generate_shadowtls_config
+    generate_shadowsocks_config
+    generate_trojan_config
+    generate_vmess_ws_config
+    generate_vless_ws_tls_config
+    generate_h2_reality_config
+    generate_grpc_reality_config
+    generate_anytls_config
+    
+    generate_main_config
+}
+
+# 创建系统服务
+create_systemd_service() {
+    log "创建 systemd 服务..."
+    
+    cat > "$SERVICE_FILE" << EOF
 [Unit]
-Description=Sing-box Service
-After=network.target
+Description=sing-box service
+Documentation=https://sing-box.sagernet.org
+After=network.target nss-lookup.target
 
 [Service]
-User=root
-WorkingDirectory=${CONF_DIR}
-ExecStart=${SB_BIN} run -c ${CONF_DIR}/config.json
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+ExecStart=$INSTALL_DIR/sing-box run -c $CONFIG_DIR/config.json
+ExecReload=/bin/kill -HUP \$MAINPID
 Restart=on-failure
-RestartSec=3
-LimitNOFILE=100000
-AmbientCapabilities=CAP_NET_BIND_SERVICE
+RestartSec=10s
+LimitNOFILE=infinity
 
 [Install]
 WantedBy=multi-user.target
 EOF
-  systemctl daemon-reload
+    
+    systemctl daemon-reload
+    systemctl enable sing-box
 }
 
-# ---------- 生成多协议配置 ----------
-# 端口规划（随机）：
-PORT_VLESS_REALITY="$(rand_port)"
-PORT_HYSTERIA2="$(rand_port)"
-PORT_TUIC="$(rand_port)"
-PORT_SHADOWTLS="$(rand_port)"
-PORT_SS2022="$(rand_port)"
-PORT_TROJAN="$(rand_port)"
-PORT_VMESS_WS="$(rand_port)"
-PORT_VLESS_WS="$(rand_port)"
-PORT_GRPC_REALITY="$(rand_port)"
-# 预留（默认不启用）
-PORT_ANYTLS="$(rand_port)"
-PORT_H2_REALITY="$(rand_port)"
+# 配置防火墙
+configure_firewall() {
+    log "配置防火墙规则..."
+    
+    # 开放所有协议端口
+    for protocol in "${PROTOCOLS[@]}"; do
+        local port=${PROTOCOL_PORTS["$protocol"]}
+        if command -v ufw >/dev/null 2>&1; then
+            ufw allow "$port" >/dev/null 2>&1
+        elif command -v firewall-cmd >/dev/null 2>&1; then
+            firewall-cmd --permanent --add-port="$port/tcp" >/dev/null 2>&1
+            firewall-cmd --permanent --add-port="$port/udp" >/dev/null 2>&1
+        fi
+    done
+    
+    if command -v firewall-cmd >/dev/null 2>&1; then
+        firewall-cmd --reload >/dev/null 2>&1
+    fi
+}
 
-WS_PATH_VMESS="/$(uuidgen | tr 'A-Z' 'a-z')-vm"
-WS_PATH_VLESS="/$(uuidgen | tr 'A-Z' 'a-z')-vl"
+# 显示节点信息
+show_node_info() {
+    echo -e "${CYAN}=== 节点信息 ===${NC}"
+    echo -e "${GREEN}以下是所有协议的节点配置信息，请根据您的客户端选择对应格式:${NC}"
+    echo
+    
+    for protocol in "${PROTOCOLS[@]}"; do
+        if [[ -n "${PROTOCOL_CONFIGS[$protocol]}" ]]; then
+            echo -e "${YELLOW}$protocol:${NC}"
+            echo "${PROTOCOL_CONFIGS[$protocol]}"
+            echo
+        fi
+    done
+    
+    echo -e "${GREEN}节点信息已保存到: $CONFIG_DIR/nodes.txt${NC}"
+    
+    # 保存节点信息到文件
+    {
+        echo "# SBall 节点信息"
+        echo "# 生成时间: $(date)"
+        echo "# 服务器IP: $SERVER_IP"
+        echo
+        for protocol in "${PROTOCOLS[@]}"; do
+            if [[ -n "${PROTOCOL_CONFIGS[$protocol]}" ]]; then
+                echo "# $protocol"
+                echo "${PROTOCOL_CONFIGS[$protocol]}"
+                echo
+            fi
+        done
+    } > "$CONFIG_DIR/nodes.txt"
+}
 
-make_config(){
-  local sni="${DEFAULT_SNI_LIST[$((RANDOM % ${#DEFAULT_SNI_LIST[@]}))]}"
+# 安装函数
+install_sball() {
+    show_banner
+    log "开始安装 SBall 科学上网代理..."
+    
+    check_system
+    get_server_ip
+    user_configuration
+    install_dependencies
+    generate_protocol_ports
+    install_singbox
+    generate_certificates
+    generate_all_configs
+    create_systemd_service
+    configure_firewall
+    
+    log "启动 sing-box 服务..."
+    systemctl start sing-box
+    
+    if systemctl is-active --quiet sing-box; then
+        log "SBall 安装完成！"
+        echo
+        show_node_info
+        echo
+        log "服务状态: $(systemctl is-active sing-box)"
+        log "使用 'systemctl status sing-box' 查看服务状态"
+        log "使用 '$0' 打开管理菜单"
+    else
+        error "sing-box 服务启动失败，请检查配置"
+        exit 1
+    fi
+}
 
-  # 证书路径选择
-  local crt key
-  if [[ "${USE_DOMAIN_TLS}" == "yes" ]]; then
-    crt="${CERT_DIR}/${DOMAIN}.crt"
-    key="${CERT_DIR}/${DOMAIN}.key"
-  else
-    crt="${CERT_DIR}/self.crt"
-    key="${CERT_DIR}/self.key"
-  fi
+# 更新 sing-box
+update_singbox() {
+    log "更新 sing-box..."
+    
+    systemctl stop sing-box
+    
+    # 备份配置
+    cp -r "$CONFIG_DIR" "$CONFIG_DIR.backup.$(date +%Y%m%d_%H%M%S)"
+    
+    # 下载最新版本
+    cd /tmp
+    wget -q --show-progress "$SING_BOX_URL" -O sing-box-new.tar.gz
+    tar -xzf sing-box-new.tar.gz
+    
+    # 替换二进制文件
+    mv sing-box-*/sing-box "$INSTALL_DIR/"
+    chmod +x "$INSTALL_DIR/sing-box"
+    
+    # 重启服务
+    systemctl start sing-box
+    
+    if systemctl is-active --quiet sing-box; then
+        log "sing-box 更新完成！当前版本: $SING_BOX_VERSION"
+    else
+        error "更新后服务启动失败，正在恢复备份..."
+        rm -rf "$CONFIG_DIR"
+        mv "$CONFIG_DIR.backup."* "$CONFIG_DIR"
+        systemctl start sing-box
+    fi
+}
 
-  # 生成主配置（inbounds 汇总；outbounds 直连+阻断；日志）
-  cat > "${CONF_DIR}/config.json" <<JSON
-{
-  "log": {
-    "level": "info",
-    "timestamp": true
-  },
-  "inbounds": [
-    {
-      "type": "vless",
-      "tag": "vless-reality-in",
-      "listen": "::",
-      "listen_port": ${PORT_VLESS_REALITY},
-      "users": [{ "uuid": "${UUID}", "flow": "xtls-rprx-vision" }],
-      "tls": {
-        "enabled": true,
-        "server_name": "${sni}",
-        "reality": {
-          "enabled": true,
-          "handshake": { "server": "${sni}", "server_port": 443 },
-          "private_key": "${REALITY_PRIVATE_KEY}",
-          "short_id": "${REALITY_SHORT_ID}"
-        }
-      }
-    },
-    {
-      "type": "hysteria2",
-      "tag": "hy2-in",
-      "listen": "::",
-      "listen_port": ${PORT_HYSTERIA2},
-      "users": [{ "password": "${PASSWORD}" }],
-      "tls": {
-        "enabled": true,
-        "insecure": true,
-        "server_name": "h3.${sni}"
-      }
-    },
-    {
-      "type": "tuic",
-      "tag": "tuic-in",
-      "listen": "::",
-      "listen_port": ${PORT_TUIC},
-      "users": [{ "uuid": "${UUID}", "password": "${PASSWORD}" }],
-      "congestion_control": "bbr",
-      "tls": {
-        "enabled": true,
-        "insecure": true,
-        "server_name": "tuic.${sni}"
-      }
-    },
-    {
-      "type": "shadowtls",
-      "tag": "shadowtls-in",
-      "listen": "::",
-      "listen_port": ${PORT_SHADOWTLS},
-      "version": 3,
-      "users": [{ "password": "${PASSWORD}" }],
-      "handshake": { "server": "${sni}", "server_port": 443 }
-    },
-    {
-      "type": "shadowsocks",
-      "tag": "ss2022-in",
-      "listen": "::",
-      "listen_port": ${PORT_SS2022},
-      "method": "2022-blake3-aes-128-gcm",
-      "password": "${PASSWORD}"
-    },
-    {
-      "type": "trojan",
-      "tag": "trojan-in",
-      "listen": "::",
-      "listen_port": ${PORT_TROJAN},
-      "users": [{ "password": "${PASSWORD}" }],
-      "tls": {
-        "enabled": true,
-        "server_name": "${DOMAIN:-localhost}",
-        "certificate_path": "${crt}",
-        "key_path": "${key}",
-        "insecure": ${USE_DOMAIN_TLS=="yes" && echo false || echo true}
-      }
-    },
-    {
-      "type": "vmess",
-      "tag": "vmess-ws-in",
-      "listen": "::",
-      "listen_port": ${PORT_VMESS_WS},
-      "users": [{ "uuid": "${UUID}" }],
-      "transport": {
-        "type": "ws",
-        "path": "${WS_PATH_VMESS}"
-      }
-    },
-    {
-      "type": "vless",
-      "tag": "vless-ws-in",
-      "listen": "::",
-      "listen_port": ${PORT_VLESS_WS},
-      "users": [{ "uuid": "${UUID}" }],
-      "transport": {
-        "type": "ws",
-        "path": "${WS_PATH_VLESS}"
-      },
-      "tls": {
-        "enabled": true,
-        "server_name": "${DOMAIN:-localhost}",
-        "certificate_path": "${crt}",
-        "key_path": "${key}",
-        "insecure": ${USE_DOMAIN_TLS=="yes" && echo false || echo true}
-      }
-    },
-    {
-      "type": "vless",
-      "tag": "grpc-reality-in",
-      "listen": "::",
-      "listen_port": ${PORT_GRPC_REALITY},
-      "users": [{ "uuid": "${UUID}" }],
-      "transport": {
-        "type": "grpc",
-        "service_name": "grpc-reality"
-      },
-      "tls": {
-        "enabled": true,
-        "server_name": "${sni}",
-        "reality": {
-          "enabled": true,
-          "handshake": { "server": "${sni}", "server_port": 443 },
-          "private_key": "${REALITY_PRIVATE_KEY}",
-          "short_id": "${REALITY_SHORT_ID}"
-        }
-      }
+# 卸载 SBall
+uninstall_sball() {
+    echo -e "${YELLOW}警告: 此操作将完全卸载 SBall 及其所有配置！${NC}"
+    read -p "确定要卸载吗? (y/n): " confirm
+    
+    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+        log "卸载 SBall..."
+        
+        # 停止并禁用服务
+        systemctl stop sing-box 2>/dev/null || true
+        systemctl disable sing-box 2>/dev/null || true
+        
+        # 删除文件
+        rm -f "$SERVICE_FILE"
+        rm -f "$INSTALL_DIR/sing-box"
+        rm -rf "$CONFIG_DIR"
+        rm -f "$LOG_FILE"
+        
+        systemctl daemon-reload
+        
+        log "SBall 已完全卸载"
+        echo -e "${YELLOW}请手动删除安装脚本: rm -f $0${NC}"
+        echo -e "${YELLOW}如需清理防火墙规则，请手动执行相关命令${NC}"
+    else
+        log "取消卸载操作"
+    fi
+}
+
+# 查看服务状态
+show_status() {
+    echo -e "${CYAN}=== 服务状态 ===${NC}"
+    
+    if systemctl is-active --quiet sing-box; then
+        echo -e "${GREEN}✓ sing-box 服务正在运行${NC}"
+    else
+        echo -e "${RED}✗ sing-box 服务已停止${NC}"
+    fi
+    
+    echo
+    systemctl status sing-box --no-pager -l
+    
+    echo
+    echo -e "${CYAN}=== 端口监听状态 ===${NC}"
+    
+    if [[ -f "$CONFIG_DIR/nodes.txt" ]]; then
+        for protocol in "${PROTOCOLS[@]}"; do
+            local port=$(grep -o ":[0-9]\+" "$CONFIG_DIR/nodes.txt" | head -1 | tr -d ':')
+            if [[ -n "$port" ]]; then
+                if netstat -tlnp | grep -q ":$port "; then
+                    echo -e "${GREEN}✓ $protocol (端口 $port) - 监听中${NC}"
+                else
+                    echo -e "${RED}✗ $protocol (端口 $port) - 未监听${NC}"
+                fi
+            fi
+        done
+    fi
+}
+
+# 查看服务日志
+show_logs() {
+    echo -e "${CYAN}=== sing-box 服务日志 ===${NC}"
+    echo -e "${YELLOW}按 Ctrl+C 退出日志查看${NC}"
+    echo
+    journalctl -u sing-box -f --no-pager
+}
+
+# 启动服务
+start_service() {
+    log "启动 sing-box 服务..."
+    systemctl start sing-box
+    
+    if systemctl is-active --quiet sing-box; then
+        log "服务启动成功"
+    else
+        error "服务启动失败"
+        systemctl status sing-box --no-pager -l
+    fi
+}
+
+# 停止服务
+stop_service() {
+    log "停止 sing-box 服务..."
+    systemctl stop sing-box
+    
+    if ! systemctl is-active --quiet sing-box; then
+        log "服务已停止"
+    else
+        error "服务停止失败"
+    fi
+}
+
+# 重启服务
+restart_service() {
+    log "重启 sing-box 服务..."
+    systemctl restart sing-box
+    
+    if systemctl is-active --quiet sing-box; then
+        log "服务重启成功"
+    else
+        error "服务重启失败"
+        systemctl status sing-box --no-pager -l
+    fi
+}
+
+# 测试配置
+test_config() {
+    log "测试配置文件..."
+    
+    if [[ ! -f "$CONFIG_DIR/config.json" ]]; then
+        error "配置文件不存在"
+        return 1
+    fi
+    
+    if "$INSTALL_DIR/sing-box" check -c "$CONFIG_DIR/config.json"; then
+        log "配置文件测试通过"
+        return 0
+    else
+        error "配置文件测试失败"
+        return 1
+    fi
+}
+
+# 生成新节点
+generate_new_nodes() {
+    log "重新生成节点配置..."
+    
+    if [[ ! -f "$CONFIG_DIR/config.json" ]]; then
+        error "请先安装 SBall"
+        return 1
+    fi
+    
+    # 重新生成配置
+    generate_protocol_ports
+    generate_all_configs
+    
+    # 重启服务应用新配置
+    restart_service
+    
+    if systemctl is-active --quiet sing-box; then
+        log "新节点生成完成！"
+        show_node_info
+    else
+        error "应用新配置失败"
+    fi
+}
+
+# 备份配置
+backup_config() {
+    local backup_file="/root/sball_backup_$(date +%Y%m%d_%H%M%S).tar.gz"
+    
+    log "备份配置到 $backup_file..."
+    
+    tar -czf "$backup_file" -C / \
+        "etc/sing-box" \
+        "etc/systemd/system/sing-box.service" \
+        "usr/local/bin/sing-box" 2>/dev/null
+    
+    if [[ -f "$backup_file" ]]; then
+        log "备份完成: $backup_file"
+    else
+        error "备份失败"
+    fi
+}
+
+# 恢复配置
+restore_config() {
+    echo "可用的备份文件:"
+    ls -la /root/sball_backup_*.tar.gz 2>/dev/null || {
+        warn "未找到备份文件"
+        return 1
     }
-    /* 预留：AnyTLS / H2-Reality，根据后续需要启用 */
-  ],
-  "outbounds": [
-    { "type": "direct", "tag": "direct" },
-    { "type": "block",  "tag": "block" }
-  ]
-}
-JSON
-}
-
-# ---------- 节点分享链接 ----------
-print_nodes(){
-  local host="${PUB_IP}"
-  if [[ "${USE_DOMAIN_TLS}" == "yes" ]]; then
-    host="${DOMAIN}"
-  fi
-
-  echo
-  green "=========== 节点信息（请妥善保存） ==========="
-  echo
-
-  # VLESS Reality (Vision)
-  local vless_real="vless://${UUID}@${PUB_IP}:${PORT_VLESS_REALITY}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${DEFAULT_SNI_LIST[0]}&fp=chrome&pbk=${REALITY_PUBLIC_KEY}&sid=${REALITY_SHORT_ID}&type=tcp#VLESS-Reality-${PUB_IP}"
-  echo "$vless_real"
-  echo
-
-  # Hysteria2
-  local hy2="hysteria2://${PASSWORD}@${PUB_IP}:${PORT_HYSTERIA2}?sni=${DEFAULT_SNI_LIST[1]}&alpn=h3&insecure=1#Hysteria2-${PUB_IP}"
-  echo "$hy2"
-  echo
-
-  # TUIC v5（部分客户端以 tuic:// 方案；v2rayN 走 sing-box json 导入更稳）
-  local tuic="tuic://${UUID}:${PASSWORD}@${PUB_IP}:${PORT_TUIC}?congestion_control=bbr&sni=tuic.${DEFAULT_SNI_LIST[0]}&allow_insecure=1#TUIC-${PUB_IP}"
-  echo "$tuic"
-  echo
-
-  # ShadowTLS v3（通常配合下游再转发；此处展示直连）
-  local shadowtls="shadowtls://${PASSWORD}@${PUB_IP}:${PORT_SHADOWTLS}?sni=${DEFAULT_SNI_LIST[0]}#ShadowTLS3-${PUB_IP}"
-  echo "$shadowtls"
-  echo
-
-  # Shadowsocks 2022
-  local method="2022-blake3-aes-128-gcm"
-  local ss_base64="$(echo -n "${method}:${PASSWORD}" | base64 -w0)"
-  local ss="ss://${ss_base64}@${PUB_IP}:${PORT_SS2022}#SS2022-${PUB_IP}"
-  echo "$ss"
-  echo
-
-  # Trojan-TLS
-  local trojan="trojan://${PASSWORD}@${host}:${PORT_TROJAN}?security=tls&sni=${DOMAIN:-localhost}&alpn=h2%2Chttp%2F1.1&fp=chrome#Trojan-TLS-${host}"
-  echo "$trojan"
-  echo
-
-  # VMess-WS（明文 WS，用于反代或内网穿透；公网建议加 CDN/NGINX）
-  local vm_json=$(cat <<EOV
-{
-  "v": "2",
-  "ps": "VMess-WS-${PUB_IP}",
-  "add": "${PUB_IP}",
-  "port": "${PORT_VMESS_WS}",
-  "id": "${UUID}",
-  "aid": "0",
-  "scy": "auto",
-  "net": "ws",
-  "type": "none",
-  "host": "",
-  "path": "${WS_PATH_VMESS}",
-  "tls": "",
-  "sni": "",
-  "alpn": "",
-  "fp": ""
-}
-EOV
-)
-  local vmess_link="vmess://$(echo -n "$vm_json" | tr -d '\n' | base64 -w0)"
-  echo "$vmess_link"
-  echo
-
-  # VLESS-WS(+TLS 可选)
-  local vless_ws="vless://${UUID}@${host}:${PORT_VLESS_WS}?encryption=none&security=tls&type=ws&path=${WS_PATH_VLESS}&sni=${DOMAIN:-localhost}&fp=chrome&alpn=h2%2Chttp%2F1.1#VLESS-WS-${host}"
-  echo "$vless_ws"
-  echo
-
-  # gRPC-Reality（部分客户端支持度较新）
-  local grpc_reality="vless://${UUID}@${PUB_IP}:${PORT_GRPC_REALITY}?encryption=none&security=reality&sni=${DEFAULT_SNI_LIST[0]}&fp=chrome&pbk=${REALITY_PUBLIC_KEY}&sid=${REALITY_SHORT_ID}&type=grpc&serviceName=grpc-reality#gRPC-Reality-${PUB_IP}"
-  echo "$grpc_reality"
-  echo
-
-  yellow "提示：若使用自签证书，客户端需开启允许不安全证书（insecure/skip-cert-verify）。"
-  echo
+    
+    echo
+    read -p "请输入要恢复的备份文件完整路径: " backup_file
+    
+    if [[ ! -f "$backup_file" ]]; then
+        error "备份文件不存在"
+        return 1
+    fi
+    
+    log "从 $backup_file 恢复配置..."
+    
+    # 停止服务
+    systemctl stop sing-box 2>/dev/null || true
+    
+    # 恢复文件
+    tar -xzf "$backup_file" -C /
+    
+    # 重新加载并启动
+    systemctl daemon-reload
+    systemctl start sing-box
+    
+    if systemctl is-active --quiet sing-box; then
+        log "配置恢复成功"
+    else
+        error "配置恢复失败"
+    fi
 }
 
-# ---------- 管理动作 ----------
-start_sb(){ systemctl enable --now sing-box && green "sing-box 已启动"; }
-stop_sb(){ systemctl stop sing-box && green "sing-box 已停止"; }
-status_sb(){ systemctl status sing-box --no-pager; }
-log_sb(){ journalctl -u sing-box -n 100 --no-pager; }
-
-# ---------- 安装流程 ----------
-do_install(){
-  need_root
-  need_ubuntu_amd64
-  ensure_deps
-  ensure_dirs
-  install_singbox
-  get_pub_ip
-  generate_base_secrets
-  ask_domain_tls
-  issue_certificates
-  make_config
-  write_systemd_unit
-  start_sb
-  green "安装完成！"
-  print_nodes
+# 流量统计（简单实现）
+show_traffic_stats() {
+    echo -e "${CYAN}=== 流量统计 ===${NC}"
+    
+    if command -v vnstat >/dev/null 2>&1; then
+        vnstat -i eth0
+    else
+        echo -e "${YELLOW}安装 vnstat 以查看详细流量统计:${NC}"
+        echo "apt install vnstat"
+        echo
+        echo -e "${BLUE}当前网络接口流量:${NC}"
+        cat /proc/net/dev | grep -E "eth0|ens|venet" | head -3
+    fi
 }
 
-do_update(){
-  need_root
-  install_singbox
-  systemctl restart sing-box || true
-  green "已更新并重启 sing-box：$("$SB_BIN" version)"
+# 系统信息
+show_system_info() {
+    echo -e "${CYAN}=== 系统信息 ===${NC}"
+    echo -e "${BLUE}操作系统:${NC} $(cat /etc/os-release | grep PRETTY_NAME | cut -d'"' -f2)"
+    echo -e "${BLUE}内核版本:${NC} $(uname -r)"
+    echo -e "${BLUE}架构:${NC} $(uname -m)"
+    echo -e "${BLUE}CPU:${NC} $(nproc) 核心"
+    echo -e "${BLUE}内存:${NC} $(free -h | awk '/^Mem:/ {print $2}')"
+    echo -e "${BLUE}磁盘:${NC} $(df -h / | awk 'NR==2 {print $2 " (可用: " $4 ")"}')"
+    echo -e "${BLUE}服务器IP:${NC} $SERVER_IP"
+    
+    if [[ -f "$CONFIG_DIR/config.json" ]]; then
+        echo -e "${BLUE}sing-box版本:${NC} $($INSTALL_DIR/sing-box version 2>/dev/null | head -1 || echo "未安装")"
+        echo -e "${BLUE}配置文件:${NC} $CONFIG_DIR/config.json"
+        echo -e "${BLUE}协议数量:${NC} ${#PROTOCOLS[@]}"
+    fi
 }
 
-do_uninstall(){
-  need_root
-  yellow "将卸载 sing-box 服务与配置（保留二进制），是否继续？(y/N)"
-  read -r c
-  if [[ "${c,,}" != "y" ]]; then
-    echo "已取消"; return
-  fi
-  systemctl disable --now sing-box || true
-  rm -f "$UNIT_FILE"
-  systemctl daemon-reload
-  rm -rf "$CONF_DIR" "$LOG_DIR" "$DATA_DIR"
-  green "已卸载服务与配置。"
-  yellow "如需删除二进制，请手动执行：rm -f ${SB_BIN}"
-  yellow "如需删除根目录的脚本文件，请手动执行：rm -f ./sball.sh"
+# 检查更新
+check_updates() {
+    log "检查 sing-box 更新..."
+    
+    local latest_version=$(curl -s "https://api.github.com/repos/SagerNet/sing-box/releases/latest" | jq -r '.tag_name' | sed 's/v//')
+    local current_version=$($INSTALL_DIR/sing-box version 2>/dev/null | head -1 | grep -o 'sing-box version [0-9.]*' | awk '{print $3}' || echo "unknown")
+    
+    echo -e "${BLUE}当前版本:${NC} $current_version"
+    echo -e "${BLUE}最新版本:${NC} $latest_version"
+    
+    if [[ "$current_version" != "$latest_version" && "$latest_version" != "null" ]]; then
+        echo -e "${YELLOW}发现新版本！${NC}"
+        read -p "是否立即更新? (y/n): " update_now
+        if [[ "$update_now" =~ ^[Yy]$ ]]; then
+            SING_BOX_VERSION="$latest_version"
+            SING_BOX_URL="https://github.com/SagerNet/sing-box/releases/download/v${latest_version}/sing-box-${latest_version}-linux-amd64.tar.gz"
+            update_singbox
+        fi
+    else
+        log "当前已是最新版本"
+    fi
 }
 
-print_menu(){
-  clear
-  blue "================ ${MENU_TITLE} ================"
-  echo "1) 安装"
-  echo "2) 更新 sing-box"
-  echo "3) 卸载（保留二进制，配置删除）"
-  echo "4) 查看节点信息"
-  echo "5) 启动 sing-box"
-  echo "6) 停止 sing-box"
-  echo "7) 查看服务状态"
-  echo "8) 查看服务日志"
-  echo "9) 退出"
-  echo "==============================================="
-  read -rp "请选择操作 [1-9]: " op
-  case "$op" in
-    1) do_install ;;
-    2) do_update ;;
-    3) do_uninstall ;;
-    4) get_pub_ip; # 尝试读取现有配置的关键信息
-       if [[ -f "${CONF_DIR}/config.json" ]]; then
-         # 从配置中抽取 Reality 公钥、短ID、端口等
-         UUID="$(jq -r '.inbounds[] | select(.tag=="vless-reality-in") | .users[0].uuid' ${CONF_DIR}/config.json)"
-         REALITY_PUBLIC_KEY="$(jq -r '.inbounds[] | select(.tag=="vless-reality-in") | .tls.reality.private_key' ${CONF_DIR}/config.json 2>/dev/null | xargs -I{} ${SB_BIN} generate reality-keypair --private-key {} 2>/dev/null | jq -r '.public_key' || echo "")"
-         REALITY_SHORT_ID="$(jq -r '.inbounds[] | select(.tag=="vless-reality-in") | .tls.reality.short_id' ${CONF_DIR}/config.json)"
-         PASSWORD="$(jq -r '.inbounds[] | select(.tag=="hysteria2-in") | .users[0].password' ${CONF_DIR}/config.json)"
-         PORT_VLESS_REALITY="$(jq -r '.inbounds[] | select(.tag=="vless-reality-in") | .listen_port' ${CONF_DIR}/config.json)"
-         PORT_HYSTERIA2="$(jq -r '.inbounds[] | select(.tag=="hy2-in") | .listen_port' ${CONF_DIR}/config.json)"
-         PORT_TUIC="$(jq -r '.inbounds[] | select(.tag=="tuic-in") | .listen_port' ${CONF_DIR}/config.json)"
-         PORT_SHADOWTLS="$(jq -r '.inbounds[] | select(.tag=="shadowtls-in") | .listen_port' ${CONF_DIR}/config.json)"
-         PORT_SS2022="$(jq -r '.inbounds[] | select(.tag=="ss2022-in") | .listen_port' ${CONF_DIR}/config.json)"
-         PORT_TROJAN="$(jq -r '.inbounds[] | select(.tag=="trojan-in") | .listen_port' ${CONF_DIR}/config.json)"
-         PORT_VMESS_WS="$(jq -r '.inbounds[] | select(.tag=="vmess-ws-in") | .listen_port' ${CONF_DIR}/config.json)"
-         PORT_VLESS_WS="$(jq -r '.inbounds[] | select(.tag=="vless-ws-in") | .listen_port' ${CONF_DIR}/config.json)"
-         PORT_GRPC_REALITY="$(jq -r '.inbounds[] | select(.tag=="grpc-reality-in") | .listen_port' ${CONF_DIR}/config.json)"
-
-         # 判断是否存在域名证书（简单判定）
-         if [[ -f "${CERT_DIR}/self.crt" ]]; then
-           USE_DOMAIN_TLS="no"
-         else
-           USE_DOMAIN_TLS="yes"
-           DOMAIN="$(ls ${CERT_DIR}/*.crt 2>/dev/null | sed 's#.*/##' | sed 's#\.crt##' | head -n1)"
-         fi
-         print_nodes
-       else
-         red "未检测到 ${CONF_DIR}/config.json"
-       fi
-       ;;
-    5) start_sb ;;
-    6) stop_sb ;;
-    7) status_sb ;;
-    8) log_sb ;;
-    9) exit 0 ;;
-    *) echo "无效选择";;
-  esac
-  read -rp "按回车返回菜单..." _
-  print_menu
+# 主菜单
+show_menu() {
+    clear
+    show_banner
+    
+    # 检查安装状态
+    local installed=false
+    if [[ -f "$INSTALL_DIR/sing-box" && -f "$CONFIG_DIR/config.json" ]]; then
+        installed=true
+        local status_color=""
+        if systemctl is-active --quiet sing-box; then
+            status_color="${GREEN}"
+            local status="运行中"
+        else
+            status_color="${RED}"
+            local status="已停止"
+        fi
+        echo -e "${BLUE}服务状态:${NC} ${status_color}${status}${NC}"
+        echo -e "${BLUE}服务器IP:${NC} $SERVER_IP"
+        echo
+    fi
+    
+    echo -e "${CYAN}=== SBall 管理菜单 ===${NC}"
+    
+    if [[ "$installed" == false ]]; then
+        echo -e "${GREEN}1.${NC} 安装 SBall"
+    else
+        echo -e "${GREEN}1.${NC} 重新安装"
+        echo -e "${GREEN}2.${NC} 更新 sing-box"
+        echo -e "${GREEN}3.${NC} 卸载"
+        echo -e "${GREEN}4.${NC} 查看节点信息"
+        echo -e "${GREEN}5.${NC} 启动服务"
+        echo -e "${GREEN}6.${NC} 停止服务"
+        echo -e "${GREEN}7.${NC} 重启服务"
+        echo -e "${GREEN}8.${NC} 查看服务状态"
+        echo -e "${GREEN}9.${NC} 查看服务日志"
+        echo -e "${YELLOW}10.${NC} 测试配置文件"
+        echo -e "${YELLOW}11.${NC} 重新生成节点"
+        echo -e "${YELLOW}12.${NC} 备份配置"
+        echo -e "${YELLOW}13.${NC} 恢复配置"
+        echo -e "${CYAN}14.${NC} 流量统计"
+        echo -e "${CYAN}15.${NC} 系统信息"
+        echo -e "${CYAN}16.${NC} 检查更新"
+    fi
+    
+    echo -e "${RED}0.${NC} 退出"
+    echo
 }
 
-# ---------- 入口 ----------
-if [[ "${1:-}" == "install" ]]; then
-  do_install
-elif [[ "${1:-}" == "update" ]]; then
-  do_update
-elif [[ "${1:-}" == "uninstall" ]]; then
-  do_uninstall
-else
-  print_menu
-fi
+# 主程序
+main() {
+    # 获取服务器IP
+    get_server_ip 2>/dev/null || true
+    
+    # 如果没有参数，显示菜单
+    if [[ $# -eq 0 ]]; then
+        while true; do
+            show_menu
+            read -p "请选择操作 [0-16]: " choice
+            
+            case $choice in
+                1)
+                    install_sball
+                    read -p "按回车键继续..."
+                    ;;
+                2)
+                    if [[ -f "$INSTALL_DIR/sing-box" ]]; then
+                        update_singbox
+                    else
+                        error "请先安装 SBall"
+                    fi
+                    read -p "按回车键继续..."
+                    ;;
+                3)
+                    uninstall_sball
+                    read -p "按回车键继续..."
+                    ;;
+                4)
+                    if [[ -f "$CONFIG_DIR/nodes.txt" ]]; then
+                        show_node_info
+                    else
+                        error "请先安装 SBall"
+                    fi
+                    read -p "按回车键继续..."
+                    ;;
+                5)
+                    start_service
+                    read -p "按回车键继续..."
+                    ;;
+                6)
+                    stop_service
+                    read -p "按回车键继续..."
+                    ;;
+                7)
+                    restart_service
+                    read -p "按回车键继续..."
+                    ;;
+                8)
+                    show_status
+                    read -p "按回车键继续..."
+                    ;;
+                9)
+                    show_logs
+                    ;;
+                10)
+                    test_config
+                    read -p "按回车键继续..."
+                    ;;
+                11)
+                    generate_new_nodes
+                    read -p "按回车键继续..."
+                    ;;
+                12)
+                    backup_config
+                    read -p "按回车键继续..."
+                    ;;
+                13)
+                    restore_config
+                    read -p "按回车键继续..."
+                    ;;
+                14)
+                    show_traffic_stats
+                    read -p "按回车键继续..."
+                    ;;
+                15)
+                    show_system_info
+                    read -p "按回车键继续..."
+                    ;;
+                16)
+                    check_updates
+                    read -p "按回车键继续..."
+                    ;;
+                0)
+                    log "感谢使用 SBall！"
+                    exit 0
+                    ;;
+                *)
+                    error "无效选择，请重新输入"
+                    read -p "按回车键继续..."
+                    ;;
+            esac
+        done
+    fi
+    
+    # 命令行参数处理
+    case "$1" in
+        "install")
+            install_sball
+            ;;
+        "uninstall")
+            uninstall_sball
+            ;;
+        "update")
+            update_singbox
+            ;;
+        "start")
+            start_service
+            ;;
+        "stop")
+            stop_service
+            ;;
+        "restart")
+            restart_service
+            ;;
+        "status")
+            show_status
+            ;;
+        "logs")
+            show_logs
+            ;;
+        "nodes")
+            show_node_info
+            ;;
+        "backup")
+            backup_config
+            ;;
+        "test")
+            test_config
+            ;;
+        *)
+            echo "SBall 科学上网代理管理脚本"
+            echo
+            echo "用法: $0 [命令]"
+            echo
+            echo "命令:"
+            echo "  install   - 安装 SBall"
+            echo "  uninstall - 卸载 SBall"
+            echo "  update    - 更新 sing-box"
+            echo "  start     - 启动服务"
+            echo "  stop      - 停止服务"
+            echo "  restart   - 重启服务"
+            echo "  status    - 查看状态"
+            echo "  logs      - 查看日志"
+            echo "  nodes     - 查看节点信息"
+            echo "  backup    - 备份配置"
+            echo "  test      - 测试配置"
+            echo
+            echo "无参数运行进入交互式菜单"
+            ;;
+    esac
+}
+
+# 脚本入口点
+main "$@"
