@@ -1014,42 +1014,22 @@ test_config() {
     fi
 }
 
-# 修复安装问题
-fix_installation() {
-    log "修复安装问题..."
+# 重新生成配置（修复问题版本）
+regenerate_config() {
+    log "重新生成配置文件（修复兼容性问题）..."
     
-    # 安装缺失的依赖
-    log "安装 socat..."
-    apt update -qq
-    apt install -y socat cron
+    # 停止服务
+    systemctl stop sing-box 2>/dev/null || true
     
-    # 重新生成证书
-    log "重新生成证书..."
-    generate_certificates
+    # 备份现有配置
+    if [[ -f "$CONFIG_DIR/config.json" ]]; then
+        cp "$CONFIG_DIR/config.json" "$CONFIG_DIR/config.json.backup.$(date +%Y%m%d_%H%M%S)"
+    fi
     
-    # 重新生成配置
-    log "重新生成配置..."
+    # 重新生成所有配置
     generate_all_configs
     
-    # 创建服务（如果不存在）
-    if [[ ! -f "$SERVICE_FILE" ]]; then
-        create_systemd_service
-    fi
-    
-    # 配置防火墙
-    configure_firewall
-    
-    log "修复完成，正在启动服务..."
-    systemctl daemon-reload
-    systemctl restart sing-box
-    
-    if systemctl is-active --quiet sing-box; then
-        log "服务启动成功！"
-        show_node_info
-    else
-        error "服务启动失败，请查看日志"
-        systemctl status sing-box --no-pager -l
-    fi
+    log "配置重新生成完成"
 }
 
 # 备份配置
