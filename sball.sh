@@ -139,13 +139,15 @@ generate_random() {
 install_dependencies() {
     log "安装系统依赖..."
     apt update -qq
-    apt install -y curl wget unzip openssl uuid-runtime jq
+    apt install -y curl wget unzip openssl uuid-runtime jq socat cron
     
     # 安装证书管理工具
     if ! command -v acme.sh >/dev/null 2>&1; then
         log "安装 acme.sh..."
-        curl https://get.acme.sh | sh -s email=my@example.com
-        source ~/.bashrc
+        curl https://get.acme.sh | sh -s email=admin@example.com
+        source ~/.bashrc 2>/dev/null || true
+        # 确保 acme.sh 可用
+        export PATH="$HOME/.acme.sh:$PATH"
     fi
 }
 
@@ -217,17 +219,52 @@ generate_certificates() {
     
     if [[ "$USE_DOMAIN" == true ]]; then
         log "为域名 $DOMAIN 申请 SSL 证书..."
-        ~/.acme.sh/acme.sh --issue -d "$DOMAIN" --standalone --keylength ec-256
-        ~/.acme.sh/acme.sh --install-cert -d "$DOMAIN" --ecc \
-            --fullchain-file "$cert_dir/cert.pem" \
-            --key-file "$cert_dir/private.key"
-    else
+        
+        # 确保 acme.sh 可用
+        export PATH="$HOME/.acme.sh:$PATH"
+        
+        # 检查域名是否解析到当前服务器
+        local domain_ip=$(dig +short "$DOMAIN" 2>/dev/null | tail -n1)
+        if [[ "$domain_ip" != "$SERVER_IP" ]]; then
+            warn "域名 $DOMAIN 没有解析到当前服务器IP $SERVER_IP"
+            warn "检测到域名解析IP: $domain_ip"
+            read -p "是否继续使用域名证书? (y/n, 默认: n): " continue_domain
+            if [[ ! "$continue_domain" =~ ^[Yy]$ ]]; then
+                log "改用自签名证书..."
+                USE_DOMAIN=false
+            fi
+        fi
+        
+        if [[ "$USE_DOMAIN" == true ]]; then
+            # 停止可能占用80端口的服务
+            systemctl stop apache2 2>/dev/null || true
+            systemctl stop nginx 2>/dev/null || true
+            
+            # 申请证书
+            if ~/.acme.sh/acme.sh --issue -d "$DOMAIN" --standalone --keylength ec-256; then
+                ~/.acme.sh/acme.sh --install-cert -d "$DOMAIN" --ecc \
+                    --fullchain-file "$cert_dir/cert.pem" \
+                    --key-file "$cert_dir/private.key"
+                log "域名证书申请成功"
+            else
+                error "域名证书申请失败，改用自签名证书"
+                USE_DOMAIN=false
+            fi
+        fi
+    fi
+    
+    if [[ "$USE_DOMAIN" == false ]]; then
         log "生成自签名证书..."
         openssl req -new -newkey rsa:2048 -days 365 -nodes -x509 \
-            -subj "/C=US/ST=State/L=City/O=Organization/CN=localhost" \
+            -subj "/C=US/ST=State/L=City/O=Organization/CN=$SERVER_IP" \
             -keyout "$cert_dir/private.key" \
             -out "$cert_dir/cert.pem"
+        log "自签名证书生成完成"
     fi
+    
+    # 设置证书文件权限
+    chmod 600 "$cert_dir/private.key"
+    chmod 644 "$cert_dir/cert.pem"
 }
 
 # 生成 VLESS-Reality 配置
@@ -977,22 +1014,42 @@ test_config() {
     fi
 }
 
-# 重新生成配置（修复问题版本）
-regenerate_config() {
-    log "重新生成配置文件（修复兼容性问题）..."
+# 修复安装问题
+fix_installation() {
+    log "修复安装问题..."
     
-    # 停止服务
-    systemctl stop sing-box 2>/dev/null || true
+    # 安装缺失的依赖
+    log "安装 socat..."
+    apt update -qq
+    apt install -y socat cron
     
-    # 备份现有配置
-    if [[ -f "$CONFIG_DIR/config.json" ]]; then
-        cp "$CONFIG_DIR/config.json" "$CONFIG_DIR/config.json.backup.$(date +%Y%m%d_%H%M%S)"
-    fi
+    # 重新生成证书
+    log "重新生成证书..."
+    generate_certificates
     
-    # 重新生成所有配置
+    # 重新生成配置
+    log "重新生成配置..."
     generate_all_configs
     
-    log "配置重新生成完成"
+    # 创建服务（如果不存在）
+    if [[ ! -f "$SERVICE_FILE" ]]; then
+        create_systemd_service
+    fi
+    
+    # 配置防火墙
+    configure_firewall
+    
+    log "修复完成，正在启动服务..."
+    systemctl daemon-reload
+    systemctl restart sing-box
+    
+    if systemctl is-active --quiet sing-box; then
+        log "服务启动成功！"
+        show_node_info
+    else
+        error "服务启动失败，请查看日志"
+        systemctl status sing-box --no-pager -l
+    fi
 }
 
 # 备份配置
@@ -1218,7 +1275,8 @@ main() {
                         echo -e "${YELLOW}选择操作:${NC}"
                         echo "1. 重新生成节点（新端口新密钥）"
                         echo "2. 修复配置问题"
-                        read -p "请选择 [1-2]: " sub_choice
+                        echo "3. 修复安装问题（证书/依赖）"
+                        read -p "请选择 [1-3]: " sub_choice
                         case $sub_choice in
                             1)
                                 generate_protocol_ports
@@ -1234,6 +1292,9 @@ main() {
                             2)
                                 regenerate_config
                                 restart_service
+                                ;;
+                            3)
+                                fix_installation
                                 ;;
                         esac
                     else
