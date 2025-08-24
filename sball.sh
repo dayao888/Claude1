@@ -1275,8 +1275,7 @@ main() {
                         echo -e "${YELLOW}选择操作:${NC}"
                         echo "1. 重新生成节点（新端口新密钥）"
                         echo "2. 修复配置问题"
-                        echo "3. 修复安装问题（证书/依赖）"
-                        read -p "请选择 [1-3]: " sub_choice
+                        read -p "请选择 [1-2]: " sub_choice
                         case $sub_choice in
                             1)
                                 generate_protocol_ports
@@ -1292,9 +1291,6 @@ main() {
                             2)
                                 regenerate_config
                                 restart_service
-                                ;;
-                            3)
-                                fix_installation
                                 ;;
                         esac
                     else
