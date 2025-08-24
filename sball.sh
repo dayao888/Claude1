@@ -268,9 +268,15 @@ input_config() {
     reading "\n $(text 8) " START_PORT
     START_PORT=${START_PORT:-"$START_PORT_DEFAULT"}
     
-    # 强制生成新的UUID（确保每次安装都是独立的）
-    UUID=$(generate_uuid)
-    info "生成的UUID: $UUID"
+    # 为每个协议生成独立的UUID（确保每次安装都是独立的）
+    info "正在为每个协议生成独立的UUID..."
+    declare -g -A UUID_ARRAY
+    for i in {0..10}; do
+        UUID_ARRAY[$i]=$(generate_uuid)
+    done
+    # 主UUID（用于向后兼容）
+    UUID=${UUID_ARRAY[0]}
+    info "生成的主UUID: $UUID"
     
     # 输入节点名称（每次生成新的随机后缀）
     NODE_NAME_DEFAULT="SBall-$(generate_random_string 6)"
@@ -295,21 +301,32 @@ input_config() {
     
     # 强制生成新的随机密码（确保每次安装都是独立的）
     info "正在生成随机密码..."
-    SHADOWTLS_PASSWORD=$(generate_random_string 16)
-    HYSTERIA2_PASSWORD=$(generate_random_string 16)
-    TUIC_PASSWORD=$(generate_random_string 16)
+    declare -g -A PASSWORD_ARRAY
+    PASSWORD_ARRAY["hysteria2"]=$(generate_random_string 16)
+    PASSWORD_ARRAY["tuic"]=$(generate_random_string 16)
+    PASSWORD_ARRAY["shadowtls"]=$(generate_random_string 16)
+     PASSWORD_ARRAY["shadowsocks"]=$(generate_random_string 16)
+     PASSWORD_ARRAY["trojan"]=$(generate_random_string 16)
+     PASSWORD_ARRAY["anytls"]=$(generate_random_string 16)
+    
+    # 向后兼容的密码变量
+    HYSTERIA2_PASSWORD=${PASSWORD_ARRAY["hysteria2"]}
+    TUIC_PASSWORD=${PASSWORD_ARRAY["tuic"]}
+     SHADOWTLS_PASSWORD=${PASSWORD_ARRAY["shadowtls"]}
+     SHADOWSOCKS_PASSWORD=${PASSWORD_ARRAY["shadowsocks"]}
+     TROJAN_PASSWORD=${PASSWORD_ARRAY["trojan"]}
+     ANYTLS_PASSWORD=${PASSWORD_ARRAY["anytls"]}
+    
     WS_PATH="/$(generate_random_string 10)"
     info "Hysteria2密码: $HYSTERIA2_PASSWORD"
-    info "TUIC密码: $TUIC_PASSWORD"
-    info "WebSocket路径: $WS_PATH"
+     info "TUIC密码: $TUIC_PASSWORD"
+     info "ShadowTLS密码: $SHADOWTLS_PASSWORD"
+     info "Shadowsocks密码: $SHADOWSOCKS_PASSWORD"
+     info "Trojan密码: $TROJAN_PASSWORD"
+     info "AnyTLS密码: $ANYTLS_PASSWORD"
+     info "WebSocket路径: $WS_PATH"
     
-    # 生成Shadowsocks专用密码（base64格式）
-    if command -v "${WORK_DIR}/sing-box" >/dev/null 2>&1; then
-        SHADOWSOCKS_PASSWORD=$(${WORK_DIR}/sing-box generate rand --base64 16)
-    else
-        SHADOWSOCKS_PASSWORD=$(openssl rand -base64 16)
-    fi
-    info "Shadowsocks密码: $SHADOWSOCKS_PASSWORD"
+    # Shadowsocks密码已在上面生成
 }
 
 # 主安装函数
@@ -379,71 +396,6 @@ generate_main_config() {
       }
     ]
   },
-  "inbounds": [],
-  "outbounds": [
-    {
-      "type": "direct",
-      "tag": "direct"
-    },
-    {
-      "type": "block",
-      "tag": "block"
-    }
-  ],
-  "route": {
-    "rules": [
-      {
-        "protocol": "dns",
-        "outbound": "dns-out"
-      }
-    ]
-  }
-}
-EOF
-}
-
-# 生成协议配置文件
-generate_protocol_configs() {
-    info "生成协议配置文件..."
-    
-    # 生成VLESS-Reality配置
-    generate_vless_reality_config
-    
-    # 生成Hysteria2配置
-    generate_hysteria2_config
-    
-    # 生成TUIC配置
-    generate_tuic_config
-    
-    # 生成ShadowTLS配置
-    generate_shadowtls_config
-    
-    # 生成Shadowsocks配置
-    generate_shadowsocks_config
-    
-    # 生成Trojan配置
-    generate_trojan_config
-    
-    # 生成VMess-WS配置
-    generate_vmess_ws_config
-    
-    # 生成VLESS-WS-TLS配置
-    generate_vless_ws_tls_config
-    
-    # 生成H2-Reality配置
-    generate_h2_reality_config
-    
-    # 生成gRPC-Reality配置
-    generate_grpc_reality_config
-    
-    # 生成AnyTLS配置
-    generate_anytls_config
-}
-
-# 生成VLESS-Reality配置
-generate_vless_reality_config() {
-    cat > ${WORK_DIR}/vless-reality.json << EOF
-{
   "inbounds": [
     {
       "type": "vless",
@@ -452,7 +404,7 @@ generate_vless_reality_config() {
       "listen_port": ${PROTOCOL_PORTS[0]},
       "users": [
         {
-          "uuid": "${UUID}",
+          "uuid": "${UUID_ARRAY[0]}",
           "flow": "xtls-rprx-vision"
         }
       ],
@@ -467,29 +419,9 @@ generate_vless_reality_config() {
           },
           "private_key": "${REALITY_PRIVATE_KEY}",
           "short_id": ["${REALITY_SHORT_ID}"]
-        },
-        "utls": {
-          "enabled": true,
-          "fingerprint": "chrome"
         }
       }
-    }
-  ],
-  "outbounds": [
-    {
-      "type": "direct",
-      "tag": "direct"
-    }
-  ]
-}
-EOF
-}
-
-# 生成Hysteria2配置
-generate_hysteria2_config() {
-    cat > ${WORK_DIR}/hysteria2.json << EOF
-{
-  "inbounds": [
+    },
     {
       "type": "hysteria2",
       "tag": "hysteria2-in",
@@ -505,64 +437,8 @@ generate_hysteria2_config() {
         "server_name": "${TLS_SERVER_DEFAULT}",
         "key_path": "${WORK_DIR}/private.key",
         "certificate_path": "${WORK_DIR}/cert.crt"
-      },
-      "masquerade": "https://www.bing.com",
-      "up_mbps": 100,
-      "down_mbps": 100
-    }
-  ],
-  "outbounds": [
-    {
-      "type": "direct",
-      "tag": "direct"
-    }
-  ]
-}
-EOF
-}
-
-# 生成TUIC配置
-generate_tuic_config() {
-    cat > ${WORK_DIR}/tuic.json << EOF
-{
-  "inbounds": [
-    {
-      "type": "tuic",
-      "tag": "tuic-in",
-      "listen": "::",
-      "listen_port": ${PROTOCOL_PORTS[2]},
-      "users": [
-        {
-          "uuid": "${UUID}",
-          "password": "${TUIC_PASSWORD}"
-        }
-      ],
-      "tls": {
-        "enabled": true,
-        "server_name": "${TLS_SERVER_DEFAULT}",
-        "key_path": "${WORK_DIR}/private.key",
-        "certificate_path": "${WORK_DIR}/cert.crt"
-      },
-      "congestion_control": "bbr",
-      "auth_timeout": "3s",
-      "zero_rtt_handshake": false
-    }
-  ],
-  "outbounds": [
-    {
-      "type": "direct",
-      "tag": "direct"
-    }
-  ]
-}
-EOF
-}
-
-# 生成ShadowTLS配置
-generate_shadowtls_config() {
-    cat > ${WORK_DIR}/shadowtls.json << EOF
-{
-  "inbounds": [
+      }
+    },
     {
       "type": "shadowtls",
       "tag": "shadowtls-in",
@@ -571,7 +447,7 @@ generate_shadowtls_config() {
       "version": 3,
       "users": [
         {
-          "password": "${SHADOWTLS_PASSWORD}"
+          "password": "${UUID_ARRAY[3]}"
         }
       ],
       "handshake": {
@@ -579,32 +455,32 @@ generate_shadowtls_config() {
         "server_port": 443
       },
       "strict_mode": true,
-      "detour": "shadowsocks-in"
+      "detour": "shadowtls-ss-in"
     },
     {
       "type": "shadowsocks",
-      "tag": "shadowsocks-in",
-      "listen": "127.0.0.1",
-      "listen_port": $((${PROTOCOL_PORTS[3]} + 1)),
+      "tag": "shadowtls-ss-in",
       "method": "2022-blake3-aes-128-gcm",
       "password": "${SHADOWTLS_PASSWORD}"
-    }
-  ],
-  "outbounds": [
+    },
     {
-      "type": "direct",
-      "tag": "direct"
-    }
-  ]
-}
-EOF
-}
-
-# 生成Shadowsocks配置
-generate_shadowsocks_config() {
-    cat > ${WORK_DIR}/shadowsocks.json << EOF
-{
-  "inbounds": [
+      "type": "tuic",
+      "tag": "tuic-in",
+      "listen": "::",
+      "listen_port": ${PROTOCOL_PORTS[2]},
+      "users": [
+        {
+          "uuid": "${UUID_ARRAY[2]}",
+          "password": "${TUIC_PASSWORD}"
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "server_name": "${TLS_SERVER_DEFAULT}",
+        "key_path": "${WORK_DIR}/private.key",
+        "certificate_path": "${WORK_DIR}/cert.crt"
+      }
+    },
     {
       "type": "shadowsocks",
       "tag": "shadowsocks-in",
@@ -612,23 +488,7 @@ generate_shadowsocks_config() {
       "listen_port": ${PROTOCOL_PORTS[4]},
       "method": "2022-blake3-aes-128-gcm",
       "password": "${SHADOWSOCKS_PASSWORD}"
-    }
-  ],
-  "outbounds": [
-    {
-      "type": "direct",
-      "tag": "direct"
-    }
-  ]
-}
-EOF
-}
-
-# 生成Trojan配置
-generate_trojan_config() {
-    cat > ${WORK_DIR}/trojan.json << EOF
-{
-  "inbounds": [
+    },
     {
       "type": "trojan",
       "tag": "trojan-in",
@@ -636,7 +496,7 @@ generate_trojan_config() {
       "listen_port": ${PROTOCOL_PORTS[5]},
       "users": [
         {
-          "password": "${UUID}"
+          "password": "${TROJAN_PASSWORD}"
         }
       ],
       "tls": {
@@ -645,23 +505,7 @@ generate_trojan_config() {
         "key_path": "${WORK_DIR}/private.key",
         "certificate_path": "${WORK_DIR}/cert.crt"
       }
-    }
-  ],
-  "outbounds": [
-    {
-      "type": "direct",
-      "tag": "direct"
-    }
-  ]
-}
-EOF
-}
-
-# 生成VMess-WS配置
-generate_vmess_ws_config() {
-    cat > ${WORK_DIR}/vmess-ws.json << EOF
-{
-  "inbounds": [
+    },
     {
       "type": "vmess",
       "tag": "vmess-ws-in",
@@ -669,34 +513,14 @@ generate_vmess_ws_config() {
       "listen_port": ${PROTOCOL_PORTS[6]},
       "users": [
         {
-          "uuid": "${UUID}",
-          "alterId": 0
+          "uuid": "${UUID_ARRAY[6]}"
         }
       ],
       "transport": {
         "type": "ws",
-        "path": "${WS_PATH}",
-        "headers": {
-          "Host": "${TLS_SERVER_DEFAULT}"
-        }
+        "path": "/vmess"
       }
-    }
-  ],
-  "outbounds": [
-    {
-      "type": "direct",
-      "tag": "direct"
-    }
-  ]
-}
-EOF
-}
-
-# 生成VLESS-WS-TLS配置
-generate_vless_ws_tls_config() {
-    cat > ${WORK_DIR}/vless-ws-tls.json << EOF
-{
-  "inbounds": [
+    },
     {
       "type": "vless",
       "tag": "vless-ws-tls-in",
@@ -704,39 +528,20 @@ generate_vless_ws_tls_config() {
       "listen_port": ${PROTOCOL_PORTS[7]},
       "users": [
         {
-          "uuid": "${UUID}"
+          "uuid": "${UUID_ARRAY[7]}"
         }
       ],
+      "transport": {
+        "type": "ws",
+        "path": "/vless"
+      },
       "tls": {
         "enabled": true,
         "server_name": "${TLS_SERVER_DEFAULT}",
         "key_path": "${WORK_DIR}/private.key",
         "certificate_path": "${WORK_DIR}/cert.crt"
-      },
-      "transport": {
-        "type": "ws",
-        "path": "${WS_PATH}",
-        "headers": {
-          "Host": "${TLS_SERVER_DEFAULT}"
-        }
       }
-    }
-  ],
-  "outbounds": [
-    {
-      "type": "direct",
-      "tag": "direct"
-    }
-  ]
-}
-EOF
-}
-
-# 生成H2-Reality配置
-generate_h2_reality_config() {
-    cat > ${WORK_DIR}/h2-reality.json << EOF
-{
-  "inbounds": [
+    },
     {
       "type": "vless",
       "tag": "h2-reality-in",
@@ -744,9 +549,13 @@ generate_h2_reality_config() {
       "listen_port": ${PROTOCOL_PORTS[8]},
       "users": [
         {
-          "uuid": "${UUID}"
+          "uuid": "${UUID_ARRAY[8]}",
+          "flow": "xtls-rprx-vision"
         }
       ],
+      "transport": {
+        "type": "http"
+      },
       "tls": {
         "enabled": true,
         "server_name": "${TLS_SERVER_DEFAULT}",
@@ -759,29 +568,8 @@ generate_h2_reality_config() {
           "private_key": "${REALITY_PRIVATE_KEY}",
           "short_id": ["${REALITY_SHORT_ID}"]
         }
-      },
-      "transport": {
-        "type": "http",
-        "path": "${WS_PATH}",
-        "method": "GET"
       }
-    }
-  ],
-  "outbounds": [
-    {
-      "type": "direct",
-      "tag": "direct"
-    }
-  ]
-}
-EOF
-}
-
-# 生成gRPC-Reality配置
-generate_grpc_reality_config() {
-    cat > ${WORK_DIR}/grpc-reality.json << EOF
-{
-  "inbounds": [
+    },
     {
       "type": "vless",
       "tag": "grpc-reality-in",
@@ -789,9 +577,14 @@ generate_grpc_reality_config() {
       "listen_port": ${PROTOCOL_PORTS[9]},
       "users": [
         {
-          "uuid": "${UUID}"
+          "uuid": "${UUID_ARRAY[9]}",
+          "flow": "xtls-rprx-vision"
         }
       ],
+      "transport": {
+        "type": "grpc",
+        "service_name": "grpc"
+      },
       "tls": {
         "enabled": true,
         "server_name": "${TLS_SERVER_DEFAULT}",
@@ -804,28 +597,8 @@ generate_grpc_reality_config() {
           "private_key": "${REALITY_PRIVATE_KEY}",
           "short_id": ["${REALITY_SHORT_ID}"]
         }
-      },
-      "transport": {
-        "type": "grpc",
-        "service_name": "grpc"
       }
-    }
-  ],
-  "outbounds": [
-    {
-      "type": "direct",
-      "tag": "direct"
-    }
-  ]
-}
-EOF
-}
-
-# 生成AnyTLS配置
-generate_anytls_config() {
-    cat > ${WORK_DIR}/anytls.json << EOF
-{
-  "inbounds": [
+    },
     {
       "type": "trojan",
       "tag": "anytls-in",
@@ -833,19 +606,14 @@ generate_anytls_config() {
       "listen_port": ${PROTOCOL_PORTS[10]},
       "users": [
         {
-          "password": "${UUID}"
+          "password": "${TROJAN_PASSWORD}"
         }
       ],
       "tls": {
         "enabled": true,
         "server_name": "${TLS_SERVER_DEFAULT}",
         "key_path": "${WORK_DIR}/private.key",
-        "certificate_path": "${WORK_DIR}/cert.crt",
-        "alpn": ["h2", "http/1.1"]
-      },
-      "fallback": {
-        "server": "127.0.0.1",
-        "server_port": 80
+        "certificate_path": "${WORK_DIR}/cert.crt"
       }
     }
   ],
@@ -853,11 +621,53 @@ generate_anytls_config() {
     {
       "type": "direct",
       "tag": "direct"
+    },
+    {
+      "type": "block",
+      "tag": "block"
     }
-  ]
+  ],
+  "route": {
+    "rules": [
+      {
+        "action": "sniff"
+      },
+      {
+        "ip_cidr": [
+          "10.0.0.0/8",
+          "172.16.0.0/12",
+          "192.168.0.0/16",
+          "127.0.0.0/8"
+        ],
+        "outbound": "direct"
+      },
+      {
+        "domain_suffix": [
+          ".cn",
+          ".com.cn",
+          ".net.cn",
+          ".org.cn"
+        ],
+        "outbound": "direct"
+      },
+      {
+        "protocol": "dns",
+        "outbound": "direct"
+      }
+    ]
+  }
 }
 EOF
 }
+
+# 生成协议配置文件（已简化为主配置文件中的inbounds）
+generate_protocol_configs() {
+    info "协议配置已集成到主配置文件中..."
+    # 所有协议配置现在直接在generate_main_config()中生成
+    # 不再需要独立的协议配置文件
+}
+
+
 
 # 创建系统服务
 create_systemd_service() {
@@ -912,19 +722,19 @@ generate_node_links() {
 # Reality短ID: $REALITY_SHORT_ID
 
 === VLESS-Reality 节点 ===
-vless://${UUID}@${SERVER_IP}:${PROTOCOL_PORTS[0]}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${TLS_SERVER_DEFAULT}&fp=chrome&pbk=${REALITY_PUBLIC_KEY}&sid=${REALITY_SHORT_ID}&type=tcp&headerType=none#${NODE_NAME}-VLESS-Reality
+vless://${UUID_ARRAY[0]}@${SERVER_IP}:${PROTOCOL_PORTS[0]}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${TLS_SERVER_DEFAULT}&fp=chrome&pbk=${REALITY_PUBLIC_KEY}&sid=${REALITY_SHORT_ID}&type=tcp&headerType=none#${NODE_NAME}-VLESS-Reality
 
 === Hysteria2 节点 ===
 hysteria2://${HYSTERIA2_PASSWORD}@${SERVER_IP}:${PROTOCOL_PORTS[1]}/?sni=${TLS_SERVER_DEFAULT}&alpn=h3#${NODE_NAME}-Hysteria2
 
 === TUIC 节点 ===
-tuic://${UUID}:${TUIC_PASSWORD}@${SERVER_IP}:${PROTOCOL_PORTS[2]}?congestion_control=bbr&udp_relay_mode=native&alpn=h3&sni=${TLS_SERVER_DEFAULT}#${NODE_NAME}-TUIC
+tuic://${UUID_ARRAY[2]}:${TUIC_PASSWORD}@${SERVER_IP}:${PROTOCOL_PORTS[2]}?congestion_control=bbr&udp_relay_mode=native&alpn=h3&sni=${TLS_SERVER_DEFAULT}#${NODE_NAME}-TUIC
 
 === Shadowsocks 节点 ===
 ss://$(echo -n "2022-blake3-aes-128-gcm:${SHADOWSOCKS_PASSWORD}" | base64 -w 0)@${SERVER_IP}:${PROTOCOL_PORTS[4]}#${NODE_NAME}-Shadowsocks
 
 === Trojan 节点 ===
-trojan://${UUID}@${SERVER_IP}:${PROTOCOL_PORTS[5]}?security=tls&sni=${TLS_SERVER_DEFAULT}&type=tcp&headerType=none#${NODE_NAME}-Trojan
+trojan://${TROJAN_PASSWORD}@${SERVER_IP}:${PROTOCOL_PORTS[5]}?security=tls&sni=${TLS_SERVER_DEFAULT}&type=tcp&headerType=none#${NODE_NAME}-Trojan
 
 === VMess-WS 节点 ===
 vmess://$(echo -n '{
@@ -932,7 +742,7 @@ vmess://$(echo -n '{
   "ps": "'${NODE_NAME}'-VMess-WS",
   "add": "'${SERVER_IP}'",
   "port": "'${PROTOCOL_PORTS[6]}'",
-  "id": "'${UUID}'",
+  "id": "'${UUID_ARRAY[6]}'",
   "aid": "0",
   "scy": "auto",
   "net": "ws",
@@ -945,16 +755,16 @@ vmess://$(echo -n '{
 }' | base64 -w 0)
 
 === VLESS-WS-TLS 节点 ===
-vless://${UUID}@${SERVER_IP}:${PROTOCOL_PORTS[7]}?encryption=none&security=tls&sni=${TLS_SERVER_DEFAULT}&type=ws&host=${TLS_SERVER_DEFAULT}&path=${WS_PATH}#${NODE_NAME}-VLESS-WS-TLS
+vless://${UUID_ARRAY[7]}@${SERVER_IP}:${PROTOCOL_PORTS[7]}?encryption=none&security=tls&sni=${TLS_SERVER_DEFAULT}&type=ws&host=${TLS_SERVER_DEFAULT}&path=${WS_PATH}#${NODE_NAME}-VLESS-WS-TLS
 
 === H2-Reality 节点 ===
-vless://${UUID}@${SERVER_IP}:${PROTOCOL_PORTS[8]}?encryption=none&security=reality&sni=${TLS_SERVER_DEFAULT}&fp=chrome&pbk=${REALITY_PUBLIC_KEY}&sid=${REALITY_SHORT_ID}&type=http&path=${WS_PATH}#${NODE_NAME}-H2-Reality
+vless://${UUID_ARRAY[8]}@${SERVER_IP}:${PROTOCOL_PORTS[8]}?encryption=none&security=reality&sni=${TLS_SERVER_DEFAULT}&fp=chrome&pbk=${REALITY_PUBLIC_KEY}&sid=${REALITY_SHORT_ID}&type=http&path=${WS_PATH}#${NODE_NAME}-H2-Reality
 
 === gRPC-Reality 节点 ===
-vless://${UUID}@${SERVER_IP}:${PROTOCOL_PORTS[9]}?encryption=none&security=reality&sni=${TLS_SERVER_DEFAULT}&fp=chrome&pbk=${REALITY_PUBLIC_KEY}&sid=${REALITY_SHORT_ID}&type=grpc&serviceName=grpc#${NODE_NAME}-gRPC-Reality
+vless://${UUID_ARRAY[9]}@${SERVER_IP}:${PROTOCOL_PORTS[9]}?encryption=none&security=reality&sni=${TLS_SERVER_DEFAULT}&fp=chrome&pbk=${REALITY_PUBLIC_KEY}&sid=${REALITY_SHORT_ID}&type=grpc&serviceName=grpc#${NODE_NAME}-gRPC-Reality
 
 === AnyTLS 节点 ===
-trojan://${UUID}@${SERVER_IP}:${PROTOCOL_PORTS[10]}?security=tls&sni=${TLS_SERVER_DEFAULT}&type=tcp&headerType=none#${NODE_NAME}-AnyTLS
+trojan://${ANYTLS_PASSWORD}@${SERVER_IP}:${PROTOCOL_PORTS[10]}?security=tls&sni=${TLS_SERVER_DEFAULT}&type=tcp&headerType=none#${NODE_NAME}-AnyTLS
 
 EOF
 
@@ -968,6 +778,19 @@ EOF
 节点名称: $NODE_NAME
 UUID: $UUID
 起始端口: $START_PORT
+
+[UUID数组]
+UUID_ARRAY_0: ${UUID_ARRAY[0]}
+UUID_ARRAY_1: ${UUID_ARRAY[1]}
+UUID_ARRAY_2: ${UUID_ARRAY[2]}
+UUID_ARRAY_3: ${UUID_ARRAY[3]}
+UUID_ARRAY_4: ${UUID_ARRAY[4]}
+UUID_ARRAY_5: ${UUID_ARRAY[5]}
+UUID_ARRAY_6: ${UUID_ARRAY[6]}
+UUID_ARRAY_7: ${UUID_ARRAY[7]}
+UUID_ARRAY_8: ${UUID_ARRAY[8]}
+UUID_ARRAY_9: ${UUID_ARRAY[9]}
+UUID_ARRAY_10: ${UUID_ARRAY[10]}
 
 [端口分配]
 VLESS-Reality: ${PROTOCOL_PORTS[0]}
@@ -992,6 +815,8 @@ ShadowTLS密码: $SHADOWTLS_PASSWORD
 Hysteria2密码: $HYSTERIA2_PASSWORD
 TUIC密码: $TUIC_PASSWORD
 Shadowsocks密码: $SHADOWSOCKS_PASSWORD
+Trojan密码: $TROJAN_PASSWORD
+AnyTLS密码: $ANYTLS_PASSWORD
 WebSocket路径: $WS_PATH
 
 EOF
