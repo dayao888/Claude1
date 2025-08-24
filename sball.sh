@@ -268,30 +268,40 @@ input_config() {
     reading "\n $(text 8) " START_PORT
     START_PORT=${START_PORT:-"$START_PORT_DEFAULT"}
     
-    # 生成UUID
-    UUID_DEFAULT=$(generate_uuid)
-    reading "\n $(text 9) " UUID
-    UUID=${UUID:-"$UUID_DEFAULT"}
+    # 强制生成新的UUID（确保每次安装都是独立的）
+    UUID=$(generate_uuid)
+    info "生成的UUID: $UUID"
     
-    # 输入节点名称
-    NODE_NAME_DEFAULT="SBall-$(generate_random_string 4)"
+    # 输入节点名称（每次生成新的随机后缀）
+    NODE_NAME_DEFAULT="SBall-$(generate_random_string 6)"
     reading "\n $(text 10) " NODE_NAME
     NODE_NAME=${NODE_NAME:-"$NODE_NAME_DEFAULT"}
+    info "节点名称: $NODE_NAME"
     
     # 生成端口数组
     for i in {0..10}; do
         PROTOCOL_PORTS[i]=$((START_PORT + i))
     done
+    info "端口范围: ${START_PORT} - $((START_PORT + 10))"
     
-    # 生成其他随机参数
+    # 强制生成新的Reality密钥对（确保每次安装都是独立的）
+    info "正在生成Reality密钥对..."
     REALITY_KEYPAIR=$(${WORK_DIR}/sing-box generate reality-keypair)
     REALITY_PRIVATE_KEY=$(echo "$REALITY_KEYPAIR" | grep 'PrivateKey:' | awk '{print $2}')
     REALITY_PUBLIC_KEY=$(echo "$REALITY_KEYPAIR" | grep 'PublicKey:' | awk '{print $2}')
     REALITY_SHORT_ID=$(generate_random_string 8)
+    info "Reality公钥: $REALITY_PUBLIC_KEY"
+    info "Reality短ID: $REALITY_SHORT_ID"
+    
+    # 强制生成新的随机密码（确保每次安装都是独立的）
+    info "正在生成随机密码..."
     SHADOWTLS_PASSWORD=$(generate_random_string 16)
     HYSTERIA2_PASSWORD=$(generate_random_string 16)
     TUIC_PASSWORD=$(generate_random_string 16)
-    WS_PATH="/$(generate_random_string 8)"
+    WS_PATH="/$(generate_random_string 10)"
+    info "Hysteria2密码: $HYSTERIA2_PASSWORD"
+    info "TUIC密码: $TUIC_PASSWORD"
+    info "WebSocket路径: $WS_PATH"
     
     # 生成Shadowsocks专用密码（base64格式）
     if command -v "${WORK_DIR}/sing-box" >/dev/null 2>&1; then
@@ -299,6 +309,7 @@ input_config() {
     else
         SHADOWSOCKS_PASSWORD=$(openssl rand -base64 16)
     fi
+    info "Shadowsocks密码: $SHADOWSOCKS_PASSWORD"
 }
 
 # 主安装函数
@@ -872,10 +883,22 @@ EOF
 
 # 生成节点链接
 generate_node_links() {
-    info "生成节点链接..."
+    info "$(text 11)"
     
     # 创建订阅目录
     mkdir -p ${WORK_DIR}/subscribe
+    
+    # 确保所有参数都已正确生成
+    if [[ -z "$UUID" || -z "$SERVER_IP" || -z "$NODE_NAME" ]]; then
+        error "关键参数未生成，请重新运行安装"
+        return 1
+    fi
+    
+    # 验证端口数组
+    if [[ ${#PROTOCOL_PORTS[@]} -lt 11 ]]; then
+        error "端口数组未正确生成，请重新运行安装"
+        return 1
+    fi
     
     # 生成节点信息文件
     cat > ${WORK_DIR}/subscribe/nodes.txt << EOF
@@ -884,6 +907,9 @@ generate_node_links() {
 # 节点名称: $NODE_NAME
 # 服务器IP: $SERVER_IP
 # UUID: $UUID
+# 起始端口: $START_PORT
+# Reality公钥: $REALITY_PUBLIC_KEY
+# Reality短ID: $REALITY_SHORT_ID
 
 === VLESS-Reality 节点 ===
 vless://${UUID}@${SERVER_IP}:${PROTOCOL_PORTS[0]}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${TLS_SERVER_DEFAULT}&fp=chrome&pbk=${REALITY_PUBLIC_KEY}&sid=${REALITY_SHORT_ID}&type=tcp&headerType=none#${NODE_NAME}-VLESS-Reality
@@ -932,6 +958,46 @@ trojan://${UUID}@${SERVER_IP}:${PROTOCOL_PORTS[10]}?security=tls&sni=${TLS_SERVE
 
 EOF
 
+    # 保存生成的参数到配置文件
+    cat > ${WORK_DIR}/subscribe/config_params.txt << EOF
+# SBall 配置参数记录
+# 生成时间: $(date)
+
+[基本信息]
+服务器IP: $SERVER_IP
+节点名称: $NODE_NAME
+UUID: $UUID
+起始端口: $START_PORT
+
+[端口分配]
+VLESS-Reality: ${PROTOCOL_PORTS[0]}
+Hysteria2: ${PROTOCOL_PORTS[1]}
+TUIC: ${PROTOCOL_PORTS[2]}
+ShadowTLS: ${PROTOCOL_PORTS[3]}
+Shadowsocks: ${PROTOCOL_PORTS[4]}
+Trojan: ${PROTOCOL_PORTS[5]}
+VMess-WS: ${PROTOCOL_PORTS[6]}
+VLESS-WS-TLS: ${PROTOCOL_PORTS[7]}
+H2-Reality: ${PROTOCOL_PORTS[8]}
+gRPC-Reality: ${PROTOCOL_PORTS[9]}
+AnyTLS: ${PROTOCOL_PORTS[10]}
+
+[Reality配置]
+私钥: $REALITY_PRIVATE_KEY
+公钥: $REALITY_PUBLIC_KEY
+短ID: $REALITY_SHORT_ID
+
+[密码配置]
+ShadowTLS密码: $SHADOWTLS_PASSWORD
+Hysteria2密码: $HYSTERIA2_PASSWORD
+TUIC密码: $TUIC_PASSWORD
+Shadowsocks密码: $SHADOWSOCKS_PASSWORD
+WebSocket路径: $WS_PATH
+
+EOF
+
+    info "配置参数已保存到: ${WORK_DIR}/subscribe/config_params.txt"
+    
     # 生成Clash配置
     generate_clash_config
     
