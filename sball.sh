@@ -49,8 +49,11 @@ NODE_TAG=(
     "anytls"            # 10
 )
 
-# 协议端口分配
-PROTOCOL_PORTS=(8881 8882 8883 8884 8885 8886 8887 8888 8889 8890 8891)
+# 协议端口分配（将在input_config函数中动态生成）
+declare -a PROTOCOL_PORTS
+# 全局凭据与标识数组
+declare -a UUID_ARRAY
+declare -A PASSWORD_ARRAY
 
 # CDN域名列表
 CDN_DOMAIN=("skk.moe" "ip.sb" "time.is" "cfip.xxxxxxxx.tk" "bestcf.top" "cdn.2020111.xyz" "xn--b6gac.eu.org")
@@ -226,6 +229,76 @@ generate_random_string() {
     tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c $length
 }
 
+# 生成自签名TLS证书
+generate_tls_certificate() {
+    info "正在生成自签名TLS证书..."
+    
+    # 检查openssl是否安装
+    if ! command -v openssl >/dev/null 2>&1; then
+        case "$SYSTEM" in
+            debian|ubuntu )
+                apt install -y openssl
+                ;;
+            centos|fedora )
+                if command -v dnf >/dev/null 2>&1; then
+                    dnf install -y openssl
+                else
+                    yum install -y openssl
+                fi
+                ;;
+            alpine )
+                apk add --no-cache openssl
+                ;;
+            arch )
+                pacman -Sy --noconfirm openssl
+                ;;
+        esac
+    fi
+    
+    # 生成私钥
+    openssl genrsa -out ${WORK_DIR}/private.key 2048
+    
+    # 生成证书签名请求配置
+    cat > ${WORK_DIR}/cert.conf << EOF
+[req]
+distinguished_name = req_distinguished_name
+req_extensions = v3_req
+prompt = no
+
+[req_distinguished_name]
+C = US
+ST = CA
+L = San Francisco
+O = SBall
+OU = IT Department
+CN = ${TLS_SERVER_DEFAULT}
+
+[v3_req]
+keyUsage = keyEncipherment, dataEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = @alt_names
+
+[alt_names]
+DNS.1 = ${TLS_SERVER_DEFAULT}
+DNS.2 = *.${TLS_SERVER_DEFAULT}
+IP.1 = ${SERVER_IP}
+EOF
+    
+    # 生成自签名证书
+    openssl req -new -x509 -key ${WORK_DIR}/private.key -out ${WORK_DIR}/cert.crt -days 365 -config ${WORK_DIR}/cert.conf -extensions v3_req
+    
+    # 设置文件权限
+    chmod 600 ${WORK_DIR}/private.key
+    chmod 644 ${WORK_DIR}/cert.crt
+    
+    # 清理临时文件
+    rm -f ${WORK_DIR}/cert.conf
+    
+    info "TLS证书生成完成"
+    info "证书文件: ${WORK_DIR}/cert.crt"
+    info "私钥文件: ${WORK_DIR}/private.key"
+}
+
 # 获取服务器IP
 get_server_ip() {
     local ip
@@ -270,7 +343,7 @@ input_config() {
     
     # 为每个协议生成独立的UUID（确保每次安装都是独立的）
     info "正在为每个协议生成独立的UUID..."
-    declare -g -A UUID_ARRAY
+    declare -a UUID_ARRAY
     for i in {0..10}; do
         UUID_ARRAY[$i]=$(generate_uuid)
     done
@@ -301,7 +374,6 @@ input_config() {
     
     # 强制生成新的随机密码（确保每次安装都是独立的）
     info "正在生成随机密码..."
-    declare -g -A PASSWORD_ARRAY
     PASSWORD_ARRAY["hysteria2"]=$(generate_random_string 16)
     PASSWORD_ARRAY["tuic"]=$(generate_random_string 16)
     PASSWORD_ARRAY["shadowtls"]=$(generate_random_string 16)
@@ -327,6 +399,9 @@ input_config() {
      info "WebSocket路径: $WS_PATH"
     
     # Shadowsocks密码已在上面生成
+    
+    # 生成自签名TLS证书
+    generate_tls_certificate
 }
 
 # 主安装函数
@@ -445,11 +520,7 @@ generate_main_config() {
       "listen": "::",
       "listen_port": ${PROTOCOL_PORTS[3]},
       "version": 3,
-      "users": [
-        {
-          "password": "${UUID_ARRAY[3]}"
-        }
-      ],
+      "password": "${SHADOWTLS_PASSWORD}",
       "handshake": {
         "server": "${TLS_SERVER_DEFAULT}",
         "server_port": 443
@@ -460,6 +531,8 @@ generate_main_config() {
     {
       "type": "shadowsocks",
       "tag": "shadowtls-ss-in",
+      "listen": "127.0.0.1",
+      "listen_port": $((PROTOCOL_PORTS[3] + 1000)),
       "method": "2022-blake3-aes-128-gcm",
       "password": "${SHADOWTLS_PASSWORD}"
     },
@@ -474,6 +547,10 @@ generate_main_config() {
           "password": "${TUIC_PASSWORD}"
         }
       ],
+      "congestion_control": "bbr",
+      "udp_relay_mode": "native",
+      "zero_rtt_handshake": false,
+      "heartbeat": "10s",
       "tls": {
         "enabled": true,
         "server_name": "${TLS_SERVER_DEFAULT}",
@@ -508,7 +585,7 @@ generate_main_config() {
     },
     {
       "type": "vmess",
-      "tag": "vmess-ws-in",
+      "tag": "vmess-ws-tls-in",
       "listen": "::",
       "listen_port": ${PROTOCOL_PORTS[6]},
       "users": [
@@ -519,6 +596,12 @@ generate_main_config() {
       "transport": {
         "type": "ws",
         "path": "/vmess"
+      },
+      "tls": {
+        "enabled": true,
+        "server_name": "${TLS_SERVER_DEFAULT}",
+        "key_path": "${WORK_DIR}/private.key",
+        "certificate_path": "${WORK_DIR}/cert.crt"
       }
     },
     {
@@ -600,21 +683,14 @@ generate_main_config() {
       }
     },
     {
-      "type": "trojan",
+      "type": "anytls",
       "tag": "anytls-in",
       "listen": "::",
       "listen_port": ${PROTOCOL_PORTS[10]},
-      "users": [
-        {
-          "password": "${TROJAN_PASSWORD}"
-        }
-      ],
-      "tls": {
-        "enabled": true,
-        "server_name": "${TLS_SERVER_DEFAULT}",
-        "key_path": "${WORK_DIR}/private.key",
-        "certificate_path": "${WORK_DIR}/cert.crt"
-      }
+      "password": "${ANYTLS_PASSWORD}",
+      "idle_session_check_interval": "30s",
+      "idle_session_timeout": "300s",
+      "min_idle_session": 10
     }
   ],
   "outbounds": [
@@ -729,6 +805,9 @@ hysteria2://${HYSTERIA2_PASSWORD}@${SERVER_IP}:${PROTOCOL_PORTS[1]}/?sni=${TLS_S
 
 === TUIC 节点 ===
 tuic://${UUID_ARRAY[2]}:${TUIC_PASSWORD}@${SERVER_IP}:${PROTOCOL_PORTS[2]}?congestion_control=bbr&udp_relay_mode=native&alpn=h3&sni=${TLS_SERVER_DEFAULT}#${NODE_NAME}-TUIC
+
+=== ShadowTLS 节点 ===
+ss://$(echo -n "2022-blake3-aes-128-gcm:${SHADOWTLS_PASSWORD}" | base64 -w 0)@${SERVER_IP}:${PROTOCOL_PORTS[3]}#${NODE_NAME}-ShadowTLS
 
 === Shadowsocks 节点 ===
 ss://$(echo -n "2022-blake3-aes-128-gcm:${SHADOWSOCKS_PASSWORD}" | base64 -w 0)@${SERVER_IP}:${PROTOCOL_PORTS[4]}#${NODE_NAME}-Shadowsocks
@@ -862,6 +941,25 @@ proxies:
     password: ${HYSTERIA2_PASSWORD}
     sni: ${TLS_SERVER_DEFAULT}
     
+  - name: "${NODE_NAME}-TUIC"
+    type: tuic
+    server: ${SERVER_IP}
+    port: ${PROTOCOL_PORTS[2]}
+    uuid: ${UUID_ARRAY[2]}
+    password: ${TUIC_PASSWORD}
+    sni: ${TLS_SERVER_DEFAULT}
+    
+  - name: "${NODE_NAME}-ShadowTLS"
+    type: ss
+    server: ${SERVER_IP}
+    port: ${PROTOCOL_PORTS[3]}
+    cipher: 2022-blake3-aes-128-gcm
+    password: ${SHADOWTLS_PASSWORD}
+    plugin: shadow-tls
+    plugin-opts:
+      host: ${TLS_SERVER_DEFAULT}
+      version: 3
+    
   - name: "${NODE_NAME}-Shadowsocks"
     type: ss
     server: ${SERVER_IP}
@@ -873,8 +971,70 @@ proxies:
     type: trojan
     server: ${SERVER_IP}
     port: ${PROTOCOL_PORTS[5]}
-    password: ${UUID}
+    password: ${TROJAN_PASSWORD}
     sni: ${TLS_SERVER_DEFAULT}
+    
+  - name: "${NODE_NAME}-VMess-WS-TLS"
+    type: vmess
+    server: ${SERVER_IP}
+    port: ${PROTOCOL_PORTS[6]}
+    uuid: ${UUID_ARRAY[6]}
+    alterId: 0
+    cipher: auto
+    network: ws
+    tls: true
+    sni: ${TLS_SERVER_DEFAULT}
+    ws-opts:
+      path: ${WS_PATH}
+      headers:
+        Host: ${TLS_SERVER_DEFAULT}
+    
+  - name: "${NODE_NAME}-VLESS-WS-TLS"
+    type: vless
+    server: ${SERVER_IP}
+    port: ${PROTOCOL_PORTS[7]}
+    uuid: ${UUID_ARRAY[7]}
+    network: ws
+    tls: true
+    sni: ${TLS_SERVER_DEFAULT}
+    ws-opts:
+      path: ${WS_PATH}
+      headers:
+        Host: ${TLS_SERVER_DEFAULT}
+    
+  - name: "${NODE_NAME}-H2-Reality"
+    type: vless
+    server: ${SERVER_IP}
+    port: ${PROTOCOL_PORTS[8]}
+    uuid: ${UUID_ARRAY[8]}
+    network: h2
+    tls: true
+    reality-opts:
+      public-key: ${REALITY_PUBLIC_KEY}
+      short-id: ${REALITY_SHORT_ID}
+    client-fingerprint: chrome
+    
+  - name: "${NODE_NAME}-gRPC-Reality"
+    type: vless
+    server: ${SERVER_IP}
+    port: ${PROTOCOL_PORTS[9]}
+    uuid: ${UUID_ARRAY[9]}
+    network: grpc
+    tls: true
+    reality-opts:
+      public-key: ${REALITY_PUBLIC_KEY}
+      short-id: ${REALITY_SHORT_ID}
+    grpc-opts:
+      grpc-service-name: grpc
+    client-fingerprint: chrome
+    
+  - name: "${NODE_NAME}-AnyTLS"
+    type: trojan
+    server: ${SERVER_IP}
+    port: ${PROTOCOL_PORTS[10]}
+    password: ${ANYTLS_PASSWORD}
+    sni: ${TLS_SERVER_DEFAULT}
+    # Note: Clash不直接支持AnyTLS，使用Trojan兼容模式
 
 proxy-groups:
   - name: "🚀 节点选择"
@@ -882,8 +1042,15 @@ proxy-groups:
     proxies:
       - "${NODE_NAME}-VLESS-Reality"
       - "${NODE_NAME}-Hysteria2"
+      - "${NODE_NAME}-TUIC"
+      - "${NODE_NAME}-ShadowTLS"
       - "${NODE_NAME}-Shadowsocks"
       - "${NODE_NAME}-Trojan"
+      - "${NODE_NAME}-VMess-WS-TLS"
+      - "${NODE_NAME}-VLESS-WS-TLS"
+      - "${NODE_NAME}-H2-Reality"
+      - "${NODE_NAME}-gRPC-Reality"
+      - "${NODE_NAME}-AnyTLS"
 
 rules:
   - DOMAIN-SUFFIX,openai.com,🚀 节点选择
@@ -932,7 +1099,7 @@ generate_singbox_client_config() {
       "tag": "vless-reality",
       "server": "${SERVER_IP}",
       "server_port": ${PROTOCOL_PORTS[0]},
-      "uuid": "${UUID}",
+      "uuid": "${UUID_ARRAY[0]}",
       "flow": "xtls-rprx-vision",
       "tls": {
         "enabled": true,
@@ -947,6 +1114,154 @@ generate_singbox_client_config() {
           "short_id": "${REALITY_SHORT_ID}"
         }
       }
+    },
+    {
+      "type": "hysteria2",
+      "tag": "hysteria2",
+      "server": "${SERVER_IP}",
+      "server_port": ${PROTOCOL_PORTS[1]},
+      "password": "${HYSTERIA2_PASSWORD}",
+      "tls": {
+        "enabled": true,
+        "server_name": "${TLS_SERVER_DEFAULT}"
+      }
+    },
+    {
+      "type": "tuic",
+      "tag": "tuic",
+      "server": "${SERVER_IP}",
+      "server_port": ${PROTOCOL_PORTS[2]},
+      "uuid": "${UUID_ARRAY[2]}",
+      "password": "${TUIC_PASSWORD}",
+      "tls": {
+        "enabled": true,
+        "server_name": "${TLS_SERVER_DEFAULT}"
+      }
+    },
+    {
+      "type": "shadowtls",
+      "tag": "shadowtls",
+      "server": "${SERVER_IP}",
+      "server_port": ${PROTOCOL_PORTS[3]},
+      "version": 3,
+      "password": "${SHADOWTLS_PASSWORD}",
+      "detour": "shadowtls-ss"
+    },
+    {
+      "type": "shadowsocks",
+      "tag": "shadowtls-ss",
+      "server": "127.0.0.1",
+      "server_port": $((PROTOCOL_PORTS[3] + 1000)),
+      "method": "2022-blake3-aes-128-gcm",
+      "password": "${SHADOWTLS_PASSWORD}"
+    },
+    {
+      "type": "shadowsocks",
+      "tag": "shadowsocks",
+      "server": "${SERVER_IP}",
+      "server_port": ${PROTOCOL_PORTS[4]},
+      "method": "2022-blake3-aes-128-gcm",
+      "password": "${SHADOWSOCKS_PASSWORD}"
+    },
+    {
+      "type": "trojan",
+      "tag": "trojan",
+      "server": "${SERVER_IP}",
+      "server_port": ${PROTOCOL_PORTS[5]},
+      "password": "${TROJAN_PASSWORD}",
+      "tls": {
+        "enabled": true,
+        "server_name": "${TLS_SERVER_DEFAULT}"
+      }
+    },
+    {
+      "type": "vmess",
+      "tag": "vmess-ws-tls",
+      "server": "${SERVER_IP}",
+      "server_port": ${PROTOCOL_PORTS[6]},
+      "uuid": "${UUID_ARRAY[6]}",
+      "transport": {
+        "type": "ws",
+        "path": "${WS_PATH}"
+      },
+      "tls": {
+        "enabled": true,
+        "server_name": "${TLS_SERVER_DEFAULT}"
+      }
+    },
+    {
+      "type": "vless",
+      "tag": "vless-ws-tls",
+      "server": "${SERVER_IP}",
+      "server_port": ${PROTOCOL_PORTS[7]},
+      "uuid": "${UUID_ARRAY[7]}",
+      "transport": {
+        "type": "ws",
+        "path": "${WS_PATH}"
+      },
+      "tls": {
+        "enabled": true,
+        "server_name": "${TLS_SERVER_DEFAULT}"
+      }
+    },
+    {
+      "type": "vless",
+      "tag": "h2-reality",
+      "server": "${SERVER_IP}",
+      "server_port": ${PROTOCOL_PORTS[8]},
+      "uuid": "${UUID_ARRAY[8]}",
+      "flow": "xtls-rprx-vision",
+      "transport": {
+        "type": "http"
+      },
+      "tls": {
+        "enabled": true,
+        "server_name": "${TLS_SERVER_DEFAULT}",
+        "utls": {
+          "enabled": true,
+          "fingerprint": "chrome"
+        },
+        "reality": {
+          "enabled": true,
+          "public_key": "${REALITY_PUBLIC_KEY}",
+          "short_id": "${REALITY_SHORT_ID}"
+        }
+      }
+    },
+    {
+      "type": "vless",
+      "tag": "grpc-reality",
+      "server": "${SERVER_IP}",
+      "server_port": ${PROTOCOL_PORTS[9]},
+      "uuid": "${UUID_ARRAY[9]}",
+      "flow": "xtls-rprx-vision",
+      "transport": {
+        "type": "grpc",
+        "service_name": "grpc"
+      },
+      "tls": {
+        "enabled": true,
+        "server_name": "${TLS_SERVER_DEFAULT}",
+        "utls": {
+          "enabled": true,
+          "fingerprint": "chrome"
+        },
+        "reality": {
+          "enabled": true,
+          "public_key": "${REALITY_PUBLIC_KEY}",
+          "short_id": "${REALITY_SHORT_ID}"
+        }
+      }
+    },
+    {
+      "type": "anytls",
+      "tag": "anytls",
+      "server": "${SERVER_IP}",
+      "server_port": ${PROTOCOL_PORTS[10]},
+      "password": "${ANYTLS_PASSWORD}",
+      "idle_session_check_interval": "30s",
+      "idle_session_timeout": "300s",
+      "min_idle_session": 10
     },
     {
       "type": "direct",
